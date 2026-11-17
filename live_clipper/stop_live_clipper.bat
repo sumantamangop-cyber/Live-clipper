@@ -1,0 +1,3 @@
+@echo off
+rem STOP button: turns off the logon start for watch and serve, then stops them now.
+powershell -NoProfile -Command "foreach ($m in 'watch','serve') { Disable-ScheduledTask -TaskName ('LiveClipper ' + $m) -ErrorAction SilentlyContinue | Out-Null; Stop-ScheduledTask -TaskName ('LiveClipper ' + $m) -ErrorAction SilentlyContinue }; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*keep_running.bat*' -or $_.CommandLine -like '*-m live_clipper*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; 'Live clipper stopped. It will not start at logon until you run start_live_clipper.bat.'"
