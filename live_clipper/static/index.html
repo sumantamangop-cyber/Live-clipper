@@ -45,6 +45,7 @@
     <button class="primary" type="submit">Add channel</button>
   </form>
   <div class="chips" id="channels"></div>
+  <div class="notice" id="cap"></div>
   <div class="notice" id="notice"></div>
 
   <h2>Waiting for review</h2>
@@ -129,8 +130,21 @@
   }
 
   async function refreshChannels() {
-    const chans = await (await fetch("/api/channels")).json();
-    $("channels").replaceChildren(...chans.map((c) => el("span", { className: "chip" }, [document.createTextNode(c)])));
+    const data = await (await fetch("/api/watch")).json();
+    $("cap").textContent = data.watcher_running
+      ? `Recording ${data.recording} of ${data.max} at once`
+      : "The watcher is not running. Start it with start_live_clipper.bat.";
+    $("channels").replaceChildren(...data.channels.map((c) => {
+      const status = !c.live ? "offline" : c.recording ? "recording" : c.on ? "live, waiting" : "live, off";
+      const btn = el("button", {}, [document.createTextNode(c.on ? "Stop" : "Record")]);
+      btn.addEventListener("click", async () => {
+        await fetch(`/api/channels/${encodeURIComponent(c.login)}/recording`, {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on: !c.on }),
+        });
+        refreshChannels();
+      });
+      return el("span", { className: "chip" }, [document.createTextNode(`${c.login} · ${status} `), btn]);
+    }));
   }
 
   $("watch-form").addEventListener("submit", async (e) => {
@@ -146,6 +160,7 @@
   refresh();
   refreshChannels();
   setInterval(refresh, 5000);
+  setInterval(refreshChannels, 5000);
 </script>
 </body>
 </html>

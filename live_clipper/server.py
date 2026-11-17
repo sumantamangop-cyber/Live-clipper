@@ -1,5 +1,6 @@
 """Review GUI and JSON API. Local by default: approving a clip publishes it, so there is no open access."""
 import hmac
+import time
 from pathlib import Path
 
 import httpx
@@ -82,6 +83,32 @@ def add_channel(body: Channel):
         return store.add_channel(body.login)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/watch")
+def watch_status():
+    state = store.watch_state()
+    off = set(store.paused())
+    return {
+        "watcher_running": time.time() - state.get("updated", 0) < 600,  # the watcher writes every poll
+        "max": config.MAX_RECORDINGS,
+        "recording": len(state.get("recording", [])),
+        "channels": [{"login": c, "live": c in state.get("live", []),
+                      "recording": c in state.get("recording", []), "on": c not in off}
+                     for c in store.channels()],
+    }
+
+
+class Recording(BaseModel):
+    on: bool
+
+
+@app.post("/api/channels/{login}/recording")
+def set_recording(login: str, body: Recording):
+    if login not in store.channels():
+        raise HTTPException(404, "not on the watch list")
+    store.set_recording(login, body.on)
+    return {"login": login, "on": body.on}
 
 
 def _clip(clip_id: str) -> dict:

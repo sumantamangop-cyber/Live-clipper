@@ -30,5 +30,6 @@ PRE_ROLL_SECONDS = 40        # the build-up before a spike (the video says 35-45
 POST_ROLL_SECONDS = 15       # the reaction after it
 POLL_SECONDS = 120           # how often live status is checked
 MAX_CLIPS_PER_CHUNK = 3
+MAX_RECORDINGS = int(os.environ.get("LIVE_CLIPPER_MAX_RECORDINGS", "4"))  # streams recorded at the same time
 MIN_CLIP_SECONDS = 40        # clips run 40-60 s: shorter windows are padded forward to this
 MIN_CLIP_SCORE = float(os.environ.get("MIN_CLIP_SCORE", "25"))  # below this a window is dead air, not queued

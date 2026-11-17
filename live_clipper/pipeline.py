@@ -118,16 +118,21 @@ async def run_session(login: str, *, record=None, live_check=None, notifier=None
     return index
 
 
-def tick(before: set, running: dict, live: set, start) -> set:
-    """One poll: start a session for each channel that just went live; forget finished ones.
+def tick(running: dict, live: set, start, paused=(), cap: int = config.MAX_RECORDINGS) -> None:
+    """One poll: forget finished sessions, stop switched-off ones, start live channels up to ``cap``.
 
-    ``start(login)`` must return an asyncio task. Mutates ``running`` and returns ``live``.
+    ``start(login)`` must return an asyncio task. Mutates ``running``.
+    shortcut: a stopped recording's current 10-minute chunk keeps going in its thread and is
+    left on disk; upgrade with a stop flag that the recorder checks.
     """
-    for login in watch.newly_live(before, live):
-        running[login] = start(login)
     for login in [k for k, t in running.items() if t.done()]:
         del running[login]
-    return live
+    for login in [k for k in running if k in paused]:
+        running.pop(login).cancel()
+    for login in sorted(live - set(running) - set(paused)):
+        if len(running) >= cap:
+            break
+        running[login] = start(login)
 
 
 async def run_watch(poll: float = config.POLL_SECONDS):
@@ -161,5 +166,8 @@ async def run_watch(poll: float = config.POLL_SECONDS):
                 token = None  # fetch a fresh token next time too
                 await asyncio.sleep(poll)
                 continue
-            before = tick(before, running, live, start)
+            before = live
+            tick(running, live, start, paused=set(store.paused()))
+            store.write_watch_state({"live": sorted(live), "recording": sorted(running),
+                                     "updated": time.time()})
             await asyncio.sleep(poll)

@@ -273,10 +273,29 @@ class _Done:
 def test_tick_starts_new_sessions_and_forgets_finished_ones():
     started = []
     running = {"old": _Done(True), "keep": _Done(False)}
-    live = pipeline.tick({"keep"}, running, {"keep", "new"}, lambda login: started.append(login) or _Done(False))
+    pipeline.tick(running, {"keep", "new"}, lambda login: started.append(login) or _Done(False))
     assert started == ["new"]
-    assert live == {"keep", "new"}
     assert "old" not in running and "keep" in running and "new" in running
+
+
+def test_tick_skips_switched_off_channels_and_respects_the_cap():
+    started = []
+    running = {}
+    pipeline.tick(running, {"a", "b", "c", "d"}, lambda login: started.append(login) or _Done(False),
+                  paused={"b"}, cap=2)
+    assert started == ["a", "c"]
+
+
+def test_tick_stops_a_recording_that_is_switched_off():
+    cancelled = []
+
+    class _Task(_Done):
+        def cancel(self):
+            cancelled.append(True)
+
+    running = {"a": _Task(False)}
+    pipeline.tick(running, {"a"}, lambda login: _Done(False), paused={"a"}, cap=2)
+    assert cancelled == [True] and "a" not in running
 
 
 def test_run_watch_refuses_without_twitch_credentials(monkeypatch):

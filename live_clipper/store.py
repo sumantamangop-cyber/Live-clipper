@@ -75,6 +75,32 @@ def channels() -> list:
     return _read("channels.json", [])
 
 
+def paused() -> list:
+    """Channels the user switched off: they stay on the watch list but are not recorded."""
+    return _read("paused.json", [])
+
+
+def set_recording(login: str, on: bool) -> list:
+    with _lock:
+        off = set(_read("paused.json", []))
+        if on:
+            off.discard(login)
+        else:
+            off.add(login)
+        _write("paused.json", sorted(off))
+    return sorted(off)
+
+
+def write_watch_state(state: dict) -> None:
+    """The watcher writes what it sees and records; the review page reads it."""
+    with _lock:
+        _write("watch_state.json", state)
+
+
+def watch_state() -> dict:
+    return _read("watch_state.json", {"live": [], "recording": [], "updated": 0})
+
+
 def add_channel(login: str) -> list:
     login = login.strip().lower()
     if not login.replace("_", "").isalnum() or len(login) > 25:
