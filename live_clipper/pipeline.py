@@ -34,6 +34,14 @@ def process_chunk(chunk_path, offset: float, chat_stamps, channel: str) -> list:
     clips_dir = config.DATA_DIR / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
     windows = signals.candidates(events, config.PRE_ROLL_SECONDS, config.POST_ROLL_SECONDS, limit=len(events))
+    # log why each window was kept or dropped, so a quiet result can be explained
+    print(f"{channel} chunk at {offset:.0f}s: {len(loud)} sound/speech triggers, "
+          f"{len(events) - len(loud)} chat triggers, {len(windows)} windows", file=sys.stderr)
+    for c in windows:
+        is_loud = any(c["start"] <= t <= c["end"] for t in loud)
+        why = ("kept" if is_loud and c["score"] >= config.MIN_CLIP_SCORE
+               else "score below MIN_CLIP_SCORE" if c["score"] < config.MIN_CLIP_SCORE else "no sound/speech trigger")
+        print(f"  window {c['start']:.0f}-{c['end']:.0f}s score {c['score']:.1f}: {why}", file=sys.stderr)
     windows = [c for c in windows if c["score"] >= config.MIN_CLIP_SCORE
                and any(c["start"] <= t <= c["end"] for t in loud)]
     made = []
