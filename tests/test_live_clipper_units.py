@@ -286,6 +286,37 @@ def test_run_watch_refuses_without_twitch_credentials(monkeypatch):
         asyncio.run(pipeline.run_watch())
 
 
+def test_run_watch_survives_a_network_error_and_keeps_polling(monkeypatch):
+    # a dropped network used to end the watcher for good; it must retry on the next poll
+    import httpx
+    from live_clipper import watch as watch_mod
+    monkeypatch.setattr(config, "TWITCH_CLIENT_ID", "cid")
+    monkeypatch.setattr(config, "TWITCH_CLIENT_SECRET", "sec")
+    monkeypatch.setattr(pipeline.store, "channels", lambda: ["alpha"])
+    calls = []
+
+    async def app_token(*a):
+        return "tok"
+
+    async def fetch_live(*a):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ConnectError("network down")
+        return set()
+
+    monkeypatch.setattr(watch_mod, "app_token", app_token)
+    monkeypatch.setattr(watch_mod, "fetch_live", fetch_live)
+
+    async def run_briefly():
+        try:
+            await asyncio.wait_for(pipeline.run_watch(poll=0.01), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass  # the watch loop never returns on its own; the timeout is the normal stop
+
+    asyncio.run(run_briefly())
+    assert len(calls) > 1  # polled again after the failure instead of crashing
+
+
 # --- buzzwords: Tripwire's rule ------------------------------------------- #
 from live_clipper import buzz  # noqa: E402
 

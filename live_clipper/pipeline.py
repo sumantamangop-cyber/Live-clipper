@@ -128,7 +128,7 @@ async def run_watch(poll: float = config.POLL_SECONDS):
         raise RuntimeError("TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET must be set to watch Twitch")
     running, before = {}, set()
     async with httpx.AsyncClient(timeout=20) as client:
-        token = await watch.app_token(client, config.TWITCH_CLIENT_ID, config.TWITCH_CLIENT_SECRET)
+        token = None
 
         async def check(login):
             return login in await watch.fetch_live(client, [login], config.TWITCH_CLIENT_ID, token)
@@ -140,9 +140,18 @@ async def run_watch(poll: float = config.POLL_SECONDS):
             return asyncio.create_task(run_session(login, live_check=check, notifier=notifier))
 
         while True:
-            live = await watch.fetch_live(client, store.channels(), config.TWITCH_CLIENT_ID, token)
-            for login in watch.newly_live(before, live):
-                if config.DISCORD_WEBHOOK_URL:
-                    await notifier(f"{login} is live. Recording started.")
+            try:
+                if token is None:
+                    token = await watch.app_token(client, config.TWITCH_CLIENT_ID, config.TWITCH_CLIENT_SECRET)
+                live = await watch.fetch_live(client, store.channels(), config.TWITCH_CLIENT_ID, token)
+                for login in watch.newly_live(before, live):
+                    if config.DISCORD_WEBHOOK_URL:
+                        await notifier(f"{login} is live. Recording started.")
+            except (httpx.HTTPError, OSError) as e:
+                # a dropped network or a refused token must not end the watcher: retry on the next poll
+                print(f"watch: {e!r}; retrying in {poll}s", file=sys.stderr)
+                token = None  # fetch a fresh token next time too
+                await asyncio.sleep(poll)
+                continue
             before = tick(before, running, live, start)
             await asyncio.sleep(poll)

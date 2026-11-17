@@ -4,7 +4,10 @@ import asyncio
 
 import uvicorn
 
-from . import config, pipeline, server, store
+from .env import load_keys
+
+load_keys()  # before config is imported: config reads the environment at import time
+from . import config, pipeline, server, store  # noqa: E402
 
 
 def main(argv=None) -> int:
