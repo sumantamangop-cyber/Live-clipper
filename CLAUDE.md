@@ -43,6 +43,7 @@ Ingest (yt-dlp or upload) → transcription (word timestamps) → scene detectio
 - Thumbnail Studio → `docs/architecture/thumbnails.md`
 - API endpoints, API keys, MCP, OAuth, webhooks → `docs/architecture/agent-access.md`
 - Autopilot → `docs/architecture/autopilot.md`
+- Live stream clipping (`live_clipper/`, self-host) → `docs/architecture/live-clipper.md`
 - Free-plan watermark (served `wm_` copy, unmark on upgrade) → `docs/architecture/watermark.md`
 - Quota wall, free overflow, lifecycle emails, cancel flow, survey, GDPR erasure → `docs/architecture/billing-and-account.md`
 - Concurrency/VRAM, auto-retry, deploy handover and drain → `docs/architecture/jobs-and-deploys.md`

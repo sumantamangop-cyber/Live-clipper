@@ -52,3 +52,6 @@ CLAUDE.local.md
 
 # Rust build output
 osrender/target/
+
+# live clipper runtime data (recordings, clips, queue)
+live_clipper_data/

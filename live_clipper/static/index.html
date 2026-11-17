@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live clipper</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#15171c; --muted:#5d6472; --line:#dfe3ea;
+          --ok:#1f8a4c; --bad:#b42318; --accent:#2b5bd7; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg:#0f1115; --card:#181b22; --ink:#eef0f4; --muted:#9aa3b2; --line:#2a2f3a; }
+  }
+  :root[data-theme="dark"] { --bg:#0f1115; --card:#181b22; --ink:#eef0f4; --muted:#9aa3b2; --line:#2a2f3a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 system-ui, sans-serif; }
+  main { max-width: 980px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 22px; margin: 8px 0 16px; }
+  h2 { font-size: 16px; margin: 24px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  form.watch { display:flex; gap:8px; flex-wrap:wrap; }
+  input { flex:1; min-width: 180px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); font:inherit; }
+  button { padding:10px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:10px; }
+  .chip { padding:4px 10px; border:1px solid var(--line); border-radius:999px; color:var(--muted); font-size:13px; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:10px; display:flex; flex-direction:column; gap:8px; }
+  video { width:100%; border-radius:8px; background:#000; aspect-ratio: 9 / 16; max-height: 420px; object-fit: contain; }
+  .meta { font-size:13px; color:var(--muted); display:flex; justify-content:space-between; gap:8px; }
+  .status { font-weight:600; }
+  .status.published { color: var(--ok); } .status.failed { color: var(--bad); }
+  .actions { display:flex; gap:8px; }
+  .actions button { flex:1; }
+  .empty { color: var(--muted); padding: 12px 0; }
+  .notice { color: var(--bad); font-size: 14px; min-height: 18px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Live clipper</h1>
+
+  <h2>Watch list</h2>
+  <form class="watch" id="watch-form">
+    <input id="login" placeholder="Twitch channel login" autocomplete="off" required>
+    <button class="primary" type="submit">Add channel</button>
+  </form>
+  <div class="chips" id="channels"></div>
+  <div class="notice" id="notice"></div>
+
+  <h2>Waiting for review</h2>
+  <div class="grid" id="pending"></div>
+  <div class="empty" id="pending-empty">No clips waiting. They appear here as streams produce moments.</div>
+
+  <h2>Done</h2>
+  <div class="grid" id="done"></div>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const notice = (msg) => { $("notice").textContent = msg || ""; };
+
+  function el(tag, props = {}, children = []) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "className") n.className = v; else n.setAttribute(k, v);
+    }
+    for (const c of children) n.append(c);
+    return n;
+  }
+
+  function clipCard(c, reviewable) {
+    const video = el("video", { src: `/clips/${encodeURIComponent(c.file)}`, controls: "", preload: "metadata", playsinline: "" });
+    const meta = el("div", { className: "meta" }, [
+      el("span", {}, [document.createTextNode(`${c.channel} · ${Math.round(c.end - c.start)}s`)]),
+      el("span", {}, [document.createTextNode(`score ${c.score}`)]),
+    ]);
+    const children = [video, meta];
+    if (reviewable) {
+      const approve = el("button", { className: "primary" }, [document.createTextNode("Approve and post")]);
+      const reject = el("button", {}, [document.createTextNode("Reject")]);
+      approve.onclick = () => act(c.id, "approve", [approve, reject]);
+      reject.onclick = () => act(c.id, "reject", [approve, reject]);
+      children.push(el("div", { className: "actions" }, [approve, reject]));
+    } else {
+      children.push(el("div", { className: `status ${c.status}` }, [document.createTextNode(c.status)]));
+      if (c.error) children.push(el("div", { className: "meta" }, [document.createTextNode(c.error)]));
+    }
+    return el("div", { className: "card" }, children);
+  }
+
+  async function act(id, verb, buttons) {
+    buttons.forEach((b) => (b.disabled = true));
+    try {
+      const r = await fetch(`/api/clips/${id}/${verb}`, { method: "POST" });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        notice(body.detail || `Request failed (${r.status})`);
+      } else {
+        notice("");
+      }
+    } catch (e) {
+      notice("Cannot reach the server.");
+    }
+    refresh();
+  }
+
+  function render(target, items, reviewable, emptyText) {
+    const node = $(target);
+    node.replaceChildren(...items.map((c) => clipCard(c, reviewable)));
+    return items.length;
+  }
+
+  async function refresh() {
+    try {
+      const clips = await (await fetch("/api/clips")).json();
+      const pending = clips.filter((c) => c.status === "pending");
+      const done = clips.filter((c) => c.status !== "pending");
+      render("pending", pending, true);
+      $("pending-empty").style.display = pending.length ? "none" : "block";
+      render("done", done, false);
+    } catch (e) {
+      notice("Cannot reach the server.");
+    }
+  }
+
+  async function refreshChannels() {
+    const chans = await (await fetch("/api/channels")).json();
+    $("channels").replaceChildren(...chans.map((c) => el("span", { className: "chip" }, [document.createTextNode(c)])));
+  }
+
+  $("watch-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const login = $("login").value.trim();
+    const r = await fetch("/api/channels", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ login }),
+    });
+    if (r.ok) { $("login").value = ""; notice(""); refreshChannels(); }
+    else { const body = await r.json().catch(() => ({})); notice(body.detail || "Could not add that channel."); }
+  });
+
+  refresh();
+  refreshChannels();
+  setInterval(refresh, 5000);
+</script>
+</body>
+</html>

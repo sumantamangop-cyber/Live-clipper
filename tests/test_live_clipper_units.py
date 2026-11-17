@@ -1,0 +1,236 @@
+"""Unit tests for the live clipper: pure logic and mocked HTTP. No ffmpeg, no network."""
+import asyncio
+import functools
+import json
+
+import httpx
+import pytest
+
+from live_clipper import chat, config, notify, pipeline, publish, recorder, signals, store, watch, cutter
+
+
+def _sync(fn):
+    """Run an async test body with asyncio.run (no pytest-asyncio dependency)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return asyncio.run(fn(*args, **kwargs))
+    return wrapper
+
+
+# --- watch: Helix responses ------------------------------------------------ #
+def test_live_logins_keeps_only_live_streams_lowercased():
+    payload = {"data": [{"type": "live", "user_login": "Alpha"}, {"type": "", "user_login": "beta"}]}
+    assert watch.live_logins(payload) == {"alpha"}
+
+
+def test_newly_live_is_the_difference():
+    assert watch.newly_live({"a"}, {"a", "b"}) == {"b"}
+    assert watch.newly_live({"a", "b"}, {"a"}) == set()
+
+
+@_sync
+async def test_fetch_live_sends_headers_and_parses():
+    seen = {}
+
+    def handler(request):
+        seen["auth"] = request.headers["Authorization"]
+        seen["client"] = request.headers["Client-Id"]
+        seen["logins"] = request.url.params.get_list("user_login")
+        return httpx.Response(200, json={"data": [{"type": "live", "user_login": "alpha"}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        live = await watch.fetch_live(client, ["alpha", "beta"], "cid", "tok")
+    assert live == {"alpha"}
+    assert seen["auth"] == "Bearer tok" and seen["client"] == "cid"
+    assert seen["logins"] == ["alpha", "beta"]
+
+
+@_sync
+async def test_fetch_live_with_no_channels_makes_no_call():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: 1 / 0)) as client:
+        assert await watch.fetch_live(client, [], "cid", "tok") == set()
+
+
+# --- signals ---------------------------------------------------------------- #
+def test_parse_levels_reads_ametadata_lines():
+    text = ("frame:0 pts:0 pts_time:0\nlavfi.astats.Overall.RMS_level=-41.2\n"
+            "frame:1 pts:16000 pts_time:1\nlavfi.astats.Overall.RMS_level=-inf\n"
+            "frame:2 pts:32000 pts_time:2\nlavfi.astats.Overall.RMS_level=-3.5\n")
+    assert signals.parse_levels(text) == [(0.0, -41.2), (2.0, -3.5)]
+
+
+def test_audio_events_flags_loud_seconds_only():
+    levels = [(0, -40.0), (1, -40.0), (2, -41.0), (3, -4.0)]
+    events = signals.audio_events(levels, rise_db=10)
+    assert [t for t, _ in events] == [3]
+    assert events[0][1] > 0
+
+
+def test_audio_events_empty():
+    assert signals.audio_events([]) == []
+
+
+def test_chat_events_needs_absolute_and_relative_busy():
+    quiet = [1, 2, 3]  # 3 messages total: below min_count
+    assert signals.chat_events(quiet) == []
+    steady = [i * 10 + 1 for i in range(10)]          # one message per 10 s bucket
+    burst = [55.0] * 12                               # a 12-message burst in bucket 5
+    events = signals.chat_events(steady + burst, bucket=10, min_count=10)
+    assert len(events) == 1 and events[0][0] == 55.0
+    # Busy in absolute terms but normal for this stream (median baseline is high): no event.
+    busy_all_along = [i * 1.0 for i in range(60)] * 1
+    assert signals.chat_events(busy_all_along, bucket=10, factor=3, min_count=10) == []
+
+
+def test_candidates_merge_overlaps_and_rank_by_weight():
+    events = [(100.0, 1.0), (110.0, 1.0), (500.0, 0.5)]
+    windows = signals.candidates(events, pre=40, post=15, limit=3)
+    assert windows[0] == {"start": 60.0, "end": 125.0, "score": 2.0}  # 100 and 110 merged
+    assert windows[1] == {"start": 460.0, "end": 515.0, "score": 0.5}
+
+
+def test_candidates_never_start_before_zero_and_respect_limit():
+    windows = signals.candidates([(5.0, 1.0), (300.0, 2.0), (700.0, 3.0)], pre=40, post=15, limit=2)
+    assert len(windows) == 2
+    assert windows[0]["score"] == 3.0
+    assert all(w["start"] >= 0 for w in windows)
+
+
+# --- recorder / cutter command lines --------------------------------------- #
+def test_record_command_chunks_by_duration():
+    cmd = recorder.record_command("https://twitch.tv/x", "out.ts", chunk_seconds=600, streamlink=["sl"])
+    assert cmd[:1] == ["sl"]
+    assert cmd[cmd.index("--hls-duration") + 1] == "600"
+    assert cmd[-2:] == ["https://twitch.tv/x", "best"]
+
+
+def test_audio_levels_command_writes_one_frame_per_second():
+    cmd = recorder.audio_levels_command("in.ts", ffmpeg=["ff"])
+    af = cmd[cmd.index("-af") + 1]
+    assert "asetnsamples=n=16000" in af and "aresample=16000" in af and "levels.txt" in af
+
+
+def test_cut_command_makes_a_centre_cropped_vertical_clip():
+    cmd = cutter.cut_command("src.ts", 12.5, 40.0, "clip.mp4", ffmpeg=["ff"])
+    vf = cmd[cmd.index("-vf") + 1]
+    assert vf.startswith("crop=ih*9/16:ih") and "scale=1080:1920" in vf
+    assert cmd[cmd.index("-ss") + 1] == "12.50"
+    assert cmd[cmd.index("-t") + 1] == "27.50"
+
+
+# --- chat ------------------------------------------------------------------- #
+def test_handle_line_answers_pings_and_counts_messages():
+    assert chat.handle_line("PING :tmi.twitch.tv") == ("pong", "PONG :tmi.twitch.tv")
+    assert chat.handle_line(":u!u@u.tmi.twitch.tv PRIVMSG #alpha :hi") == ("msg", None)
+    assert chat.handle_line(":tmi.twitch.tv 001 justinfan1 :Welcome") == (None, None)
+
+
+def test_chat_counter_stores_times_not_text():
+    c = chat.ChatCounter("Alpha", t0=100.0)
+    c.on_line(":u!u@u PRIVMSG #alpha :secret text", now=107.5)
+    assert c.stamps == [7.5]
+    assert c.on_line("PING :x", now=108) == "PONG :x"
+
+
+# --- notify ----------------------------------------------------------------- #
+@pytest.mark.parametrize("url,ok", [
+    ("https://discord.com/api/webhooks/1/abc", True),
+    ("http://discord.com/api/webhooks/1/abc", False),
+    ("https://evil.example/api/webhooks/1/abc", False),
+    ("https://discord.com/somewhere/else", False),
+    ("", False),
+])
+def test_valid_webhook(url, ok):
+    assert notify.valid_webhook(url) is ok
+
+
+@_sync
+async def test_notify_sends_only_to_valid_webhooks_and_truncates():
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content))
+        return httpx.Response(204)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await notify.send(client, "https://discord.com/api/webhooks/1/x", "a" * 5000)
+        assert not await notify.send(client, "https://evil.example/api/webhooks/1/x", "hi")
+    assert len(sent) == 1 and len(sent[0]["content"]) == 1900
+
+
+# --- store ------------------------------------------------------------------ #
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    return tmp_path
+
+
+def test_store_clip_lifecycle(data_dir):
+    clip = store.add_clip("alpha", 1.0, 30.0, 2.5, "a.mp4")
+    assert store.list_clips("pending")[0]["id"] == clip["id"]
+    updated = store.set_status(clip["id"], "published", result={"ok": True})
+    assert updated["status"] == "published" and updated["result"] == {"ok": True}
+    assert store.list_clips("pending") == []
+    with pytest.raises(ValueError):
+        store.set_status(clip["id"], "bogus")
+    with pytest.raises(KeyError):
+        store.set_status("missing", "rejected")
+
+
+def test_store_channels_validate_and_dedupe(data_dir):
+    store.add_channel("Alpha")
+    assert store.add_channel("alpha") == ["alpha"]
+    with pytest.raises(ValueError):
+        store.add_channel("not a login!")
+
+
+# --- publish ---------------------------------------------------------------- #
+@_sync
+async def test_publish_posts_multipart_with_apikey(tmp_path):
+    video = tmp_path / "c.mp4"
+    video.write_bytes(b"fake")
+    seen = {}
+
+    def handler(request):
+        seen["auth"] = request.headers["Authorization"]
+        seen["body"] = request.content
+        return httpx.Response(200, json={"request_id": "r1"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        out = await publish.publish(client, "KEY", "profile", str(video), "T" * 150)
+    assert out == {"request_id": "r1"}
+    assert seen["auth"] == "Apikey KEY"
+    assert b'name="video"' in seen["body"] and b"fake" in seen["body"]
+    assert b"profile" in seen["body"]
+
+
+@_sync
+async def test_publish_refuses_without_configuration(tmp_path):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: 1 / 0)) as client:
+        with pytest.raises(RuntimeError):
+            await publish.publish(client, "", "", str(tmp_path / "x.mp4"), "t")
+
+
+# --- pipeline: the poll state machine ---------------------------------------- #
+class _Done:
+    def __init__(self, done):
+        self._done = done
+
+    def done(self):
+        return self._done
+
+
+def test_tick_starts_new_sessions_and_forgets_finished_ones():
+    started = []
+    running = {"old": _Done(True), "keep": _Done(False)}
+    live = pipeline.tick({"keep"}, running, {"keep", "new"}, lambda login: started.append(login) or _Done(False))
+    assert started == ["new"]
+    assert live == {"keep", "new"}
+    assert "old" not in running and "keep" in running and "new" in running
+
+
+def test_run_watch_refuses_without_twitch_credentials(monkeypatch):
+    monkeypatch.setattr(config, "TWITCH_CLIENT_ID", "")
+    monkeypatch.setattr(config, "TWITCH_CLIENT_SECRET", "")
+    with pytest.raises(RuntimeError):
+        asyncio.run(pipeline.run_watch())
