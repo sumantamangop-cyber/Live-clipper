@@ -30,7 +30,7 @@
   .status { font-weight:600; }
   .status.published { color: var(--ok); } .status.failed { color: var(--bad); }
   .actions { display:flex; gap:8px; }
-  .actions button { flex:1; }
+  .actions button, .actions a.button { flex:1; text-align:center; padding:10px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); font:inherit; text-decoration:none; }
   .empty { color: var(--muted); padding: 12px 0; }
   .notice { color: var(--bad); font-size: 14px; min-height: 18px; }
 </style>
@@ -75,11 +75,12 @@
     ]);
     const children = [video, meta];
     if (reviewable) {
-      const approve = el("button", { className: "primary" }, [document.createTextNode("Approve and post")]);
+      const approve = el("button", { className: "primary" }, [document.createTextNode("Approve")]);
       const reject = el("button", {}, [document.createTextNode("Reject")]);
+      const download = el("a", { href: `/clips/${encodeURIComponent(c.file)}`, download: c.file, className: "button" }, [document.createTextNode("Download")]);
       approve.onclick = () => act(c.id, "approve", [approve, reject]);
       reject.onclick = () => act(c.id, "reject", [approve, reject]);
-      children.push(el("div", { className: "actions" }, [approve, reject]));
+      children.push(el("div", { className: "actions" }, [approve, reject, download]));
     } else {
       children.push(el("div", { className: `status ${c.status}` }, [document.createTextNode(c.status)]));
       if (c.error) children.push(el("div", { className: "meta" }, [document.createTextNode(c.error)]));
@@ -109,9 +110,14 @@
     return items.length;
   }
 
+  let lastState = "";
   async function refresh() {
     try {
       const clips = await (await fetch("/api/clips")).json();
+      // rebuilding the cards restarts every <video>, so only redraw when something changed
+      const state = JSON.stringify(clips);
+      if (state === lastState) return;
+      lastState = state;
       const pending = clips.filter((c) => c.status === "pending");
       const done = clips.filter((c) => c.status !== "pending");
       render("pending", pending, true);

@@ -1,0 +1,42 @@
+# Tripwire trigger phrases. A phrase only fires when the audio rises by at least min_rise_db
+# (vs the 60 s rolling median) within match_window_s seconds of it. Matching is case-insensitive
+# on whole words, after punctuation is stripped and hyphens become spaces ("6-7" -> "6 7").
+
+match_window_s: 3        # "a few seconds" either side of the phrase
+merge_gap_s: 30          # triggers this close become one clip
+clip_before_s: 20
+clip_after_s: 25
+min_clip_s: 15
+max_clip_s: 60
+max_clips_per_vod: 8
+twitch_viewer_bonus: 3   # added to a clip's score if a viewer clip overlaps it (only with Twitch keys set)
+
+tiers:
+  1:
+    min_rise_db: 6
+    weight: 6            # score = dB rise + weight
+    phrases: ["clip that", "clip it", "twitch clip that", "that's a clip"]
+  2:
+    min_rise_db: 6
+    weight: 3
+    phrases: ["no way", "oh my god", "are you kidding me", "what the",
+              "cooked", "we're cooked", "lock in", "locked in", "mogging", "mogged", "aura",
+              # "chat" on its own is too frequent; only these phrases count
+              "chat look at this", "what is chat saying"]
+  3:
+    min_rise_db: 9
+    weight: 0
+    phrases: ["rizz", "delulu", "npc", "6 7", "type shit"]
+
+# Transcriber spellings -> the phrase they count as. Left side is matched the same way as phrases.
+variants:
+  "6 7": ["six seven", "67", "6 7"]
+  "type shit": ["typa shit", "ts"]
+  "mogged": ["moged"]
+  "rizz": ["riz"]
+  "delulu": ["dululu"]
+
+# Per-creator catchphrases (tier 2 rules). Added ONLY after the user approves the mined list.
+# creators:
+#   somecreator: ["phrase one", "phrase two"]
+creators: {}

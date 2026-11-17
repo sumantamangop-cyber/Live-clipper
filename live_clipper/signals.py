@@ -41,8 +41,16 @@ def chat_events(stamps, bucket: float = 10.0, factor: float = 3.0, min_count: in
     return [(i * bucket + bucket / 2, c / min_count) for i, c in counts.items() if c >= threshold]
 
 
-def candidates(events, pre: float = 40.0, post: float = 15.0, limit: int = 3) -> list:
-    """Merge overlapping windows around events; the heaviest ``limit`` windows win."""
+def is_hot(stamps, now: float, window: float = 60.0, min_msgs: int = 30) -> bool:
+    """True when at least ``min_msgs`` chat messages arrived in the last ``window`` seconds."""
+    return sum(1 for s in stamps if now - window <= s <= now) >= min_msgs
+
+
+def candidates(events, pre: float = 40.0, post: float = 15.0, limit: int = 3, max_len: float = 60.0) -> list:
+    """Merge overlapping windows around events; the heaviest ``limit`` windows win.
+
+    A merged window is capped at ``max_len`` seconds so a busy stretch cannot become one long clip.
+    """
     windows = sorted((max(0.0, t - pre), t + post, w) for t, w in events)
     merged = []
     for start, end, weight in windows:
@@ -52,4 +60,5 @@ def candidates(events, pre: float = 40.0, post: float = 15.0, limit: int = 3) ->
         else:
             merged.append((start, end, weight))
     merged.sort(key=lambda x: -x[2])
-    return [{"start": round(s, 2), "end": round(e, 2), "score": round(w, 2)} for s, e, w in merged[:limit]]
+    return [{"start": round(s, 2), "end": round(min(e, s + max_len), 2), "score": round(w, 2)}
+            for s, e, w in merged[:limit]]

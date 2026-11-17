@@ -63,6 +63,14 @@ def set_status(clip_id: str, status: str, **extra) -> dict:
     raise KeyError(clip_id)
 
 
+def remove_clip(clip_id: str) -> None:
+    with _lock:
+        clips = _read("clips.json", [])
+        if not any(c["id"] == clip_id for c in clips):
+            raise KeyError(clip_id)
+        _write("clips.json", [c for c in clips if c["id"] != clip_id])
+
+
 def channels() -> list:
     return _read("channels.json", [])
 

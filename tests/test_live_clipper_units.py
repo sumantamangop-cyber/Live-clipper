@@ -85,8 +85,39 @@ def test_chat_events_needs_absolute_and_relative_busy():
 def test_candidates_merge_overlaps_and_rank_by_weight():
     events = [(100.0, 1.0), (110.0, 1.0), (500.0, 0.5)]
     windows = signals.candidates(events, pre=40, post=15, limit=3)
-    assert windows[0] == {"start": 60.0, "end": 125.0, "score": 2.0}  # 100 and 110 merged
+    assert windows[0] == {"start": 60.0, "end": 120.0, "score": 2.0}  # 100 and 110 merged, capped at 60 s
     assert windows[1] == {"start": 460.0, "end": 515.0, "score": 0.5}
+
+
+def test_is_hot_counts_only_the_last_window():
+    stamps = [100.0] * 30                      # 30 messages right now
+    assert signals.is_hot(stamps, now=130.0, window=60, min_msgs=30)
+    assert not signals.is_hot(stamps, now=200.0, window=60, min_msgs=30)  # they are too old
+    assert not signals.is_hot([100.0] * 29, now=130.0, window=60, min_msgs=30)
+
+
+@_sync
+async def test_quiet_chat_records_nothing_and_stops_when_offline(tmp_path):
+    calls = {"record": 0}
+    checks = iter([True, False])  # live twice, then offline
+
+    def record(url, out):
+        calls["record"] += 1
+        return True
+
+    async def live_check(login):
+        return next(checks)
+
+    processed = await pipeline.run_session(
+        "alpha", record=record, live_check=live_check, chunk_dir=tmp_path / "rec",
+        use_chat=False, is_hot=lambda s, n: False, poll_seconds=0)
+    assert processed == 0 and calls["record"] == 0
+
+
+def test_candidates_cap_a_busy_stretch_at_max_len():
+    events = [(100.0, 1.0), (130.0, 1.0), (160.0, 1.0), (190.0, 1.0)]  # one long run of spikes
+    (window,) = signals.candidates(events, pre=40, post=15, limit=3, max_len=60)
+    assert window["end"] - window["start"] == 60.0
 
 
 def test_candidates_never_start_before_zero_and_respect_limit():
@@ -110,12 +141,31 @@ def test_audio_levels_command_writes_one_frame_per_second():
     assert "asetnsamples=n=16000" in af and "aresample=16000" in af and "levels.txt" in af
 
 
-def test_cut_command_makes_a_centre_cropped_vertical_clip():
+def test_cut_command_keeps_the_whole_frame_over_a_blurred_background():
     cmd = cutter.cut_command("src.ts", 12.5, 40.0, "clip.mp4", ffmpeg=["ff"])
-    vf = cmd[cmd.index("-vf") + 1]
-    assert vf.startswith("crop=ih*9/16:ih") and "scale=1080:1920" in vf
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "boxblur" in graph and "overlay=(W-w)/2:(H-h)/2" in graph and "crop=ih" not in graph
+    assert "scale=1080:-2" in graph and graph.endswith("[v]")
+    assert "subtitles=" not in graph
     assert cmd[cmd.index("-ss") + 1] == "12.50"
     assert cmd[cmd.index("-t") + 1] == "27.50"
+
+
+def test_cut_command_burns_in_subtitles_from_a_bare_file_name():
+    cmd = cutter.cut_command("src.ts", 0, 30, "clip.mp4", ffmpeg=["ff"], subs="/tmp/x/clip.srt")
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "subtitles=filename=clip.srt:force_style='" in graph
+    assert "[v]" in graph
+
+
+def test_srt_groups_words_into_short_lines_with_relative_times():
+    from live_clipper import captions
+    words = [{"w": w, "start": s, "end": s + 0.4} for w, s in
+             [("one", 10.0), ("two", 10.5), ("three", 11.0), ("four", 11.5), ("five", 12.0), ("late", 20.0)]]
+    cues = captions.lines(words, 10.0, 25.0)
+    assert [t for _, _, t in cues] == ["one two three four", "five", "late"]
+    assert cues[0][0] == 0.0 and abs(cues[2][0] - 10.0) < 1e-9
+    assert captions.srt_time(3661.5) == "01:01:01,500"
 
 
 # --- chat ------------------------------------------------------------------- #
@@ -234,3 +284,51 @@ def test_run_watch_refuses_without_twitch_credentials(monkeypatch):
     monkeypatch.setattr(config, "TWITCH_CLIENT_SECRET", "")
     with pytest.raises(RuntimeError):
         asyncio.run(pipeline.run_watch())
+
+
+# --- buzzwords: Tripwire's rule ------------------------------------------- #
+from live_clipper import buzz  # noqa: E402
+
+BUZZ_YML = """\
+match_window_s: 3
+tiers:
+  1: {min_rise_db: 6, weight: 6, phrases: ["clip that"]}
+  3: {min_rise_db: 9, weight: 0, phrases: ["rizz"]}
+variants:
+  "clip that": ["clip dat"]
+creators:
+  alpha: ["cooked"]
+"""
+
+
+def _words(*pairs):
+    return [{"w": w, "start": s, "end": s + 0.4} for w, s in pairs]
+
+
+def test_buzz_rules_match_variants_and_creator_extras(tmp_path):
+    p = tmp_path / "b.yml"
+    p.write_text(BUZZ_YML, encoding="utf-8")
+    cfg, tiers, rules = buzz.load_rules("Alpha", path=p)
+    hits = buzz.find_hits(_words(("Clip", 4.0), ("dat!", 4.4), ("so", 5.0), ("cooked", 6.0)), rules)
+    assert {h["phrase"] for h in hits} == {"clip that", "cooked"}
+    assert all(h["t"] in (4.0, 6.0) for h in hits)
+
+
+def test_buzz_fires_only_when_audio_rises_near_the_phrase(tmp_path):
+    p = tmp_path / "b.yml"
+    p.write_text(BUZZ_YML, encoding="utf-8")
+    cfg, tiers, rules = buzz.load_rules("nobody", path=p)
+    quiet = [(s, -40.0) for s in range(80)]
+    loud = [(s, -40.0 if s != 30 else -20.0) for s in range(80)]  # +20 dB at second 30
+    hits = [{"phrase": "clip that", "tier": 1, "t": 29.0}]
+    assert buzz.events(hits, buzz.rise_per_second(quiet), cfg, tiers) == []
+    (t, score), = buzz.events(hits, buzz.rise_per_second(loud), cfg, tiers)
+    assert t == 30.0 and score > 6
+
+
+def test_buzz_tier_three_needs_a_bigger_rise(tmp_path):
+    p = tmp_path / "b.yml"
+    p.write_text(BUZZ_YML, encoding="utf-8")
+    cfg, tiers, _ = buzz.load_rules("nobody", path=p)
+    rise = buzz.rise_per_second([(s, -40.0 if s != 30 else -32.0) for s in range(80)])  # +8 dB
+    assert buzz.events([{"phrase": "rizz", "tier": 3, "t": 30.0}], rise, cfg, tiers) == []

@@ -30,10 +30,23 @@ def _sync(fn):
     return wrapper
 
 
+@pytest.fixture(autouse=True)
+def no_speech_model(monkeypatch):
+    """Transcription needs the Parakeet model (about 600 MB); these tests cover cutting, not speech."""
+    monkeypatch.setattr(config, "BUZZWORDS_ENABLED", False)
+    monkeypatch.setattr(config, "MIN_CLIP_SCORE", 0.0)  # the score gate has its own test below
+
+
 @pytest.fixture
 def data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATA_DIR", tmp_path / "data")
     return tmp_path / "data"
+
+
+def test_windows_below_the_minimum_score_are_not_queued(chunk, data_dir, monkeypatch):
+    monkeypatch.setattr(config, "MIN_CLIP_SCORE", 1e9)
+    assert pipeline.process_chunk(chunk, 0.0, [], "alpha") == []
+    assert store.list_clips() == []
 
 
 @pytest.fixture
@@ -141,10 +154,11 @@ async def test_end_to_end_session_then_approve_publishes(chunk, data_dir, monkey
 
     processed = await pipeline.run_session(
         "alpha", record=record, live_check=live_check, notifier=notifier,
-        chunk_dir=tmp_path / "rec", use_chat=False, retry_seconds=0)
+        chunk_dir=tmp_path / "rec", use_chat=False, retry_seconds=0, is_hot=lambda s, n: True)
     assert processed == 2 and calls["record"] == 2
     pending = store.list_clips("pending")
     assert pending, "the synthetic beeps must produce reviewable clips"
+    assert not list((tmp_path / "rec").glob("*.ts")), "processed chunks are deleted"
     assert len(calls["notes"]) == len(pending)  # one Discord note per clip queued
 
     published = {}
@@ -178,3 +192,21 @@ def test_failed_publish_stays_in_queue_with_reason(chunk, data_dir, monkeypatch)
     client.post(f"/api/clips/{made[0]['id']}/approve")
     clip = next(c for c in client.get("/api/clips").json() if c["id"] == made[0]["id"])
     assert clip["status"] == "failed" and "network down" in clip["error"]
+
+
+@_sync
+async def test_a_failed_chunk_does_not_end_the_session(tmp_path, monkeypatch):
+    """Transcription can fail on one chunk; the session must go on recording the rest."""
+    def boom(*args, **kwargs):
+        raise RuntimeError("model unavailable")
+
+    monkeypatch.setattr(pipeline, "process_chunk", boom)
+    checks = iter([True, False])  # live after the first chunk, offline after the second
+
+    async def live_check(login):
+        return next(checks)
+
+    processed = await pipeline.run_session(
+        "alpha", record=lambda url, out: (out.write_bytes(b"x") or True), live_check=live_check,
+        chunk_dir=tmp_path / "rec", use_chat=False, is_hot=lambda s, n: True, poll_seconds=0)
+    assert processed == 2  # both chunks were recorded even though processing failed

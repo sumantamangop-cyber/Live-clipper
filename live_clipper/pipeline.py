@@ -1,10 +1,13 @@
 """The loop that ties the modules together: live -> record -> moments -> clips -> review -> Discord."""
 import asyncio
+import sys
+import time
 import uuid
 from pathlib import Path
 
 import httpx
 
+from . import buzz, captions
 from . import chat as chat_mod
 from . import config, cutter, notify, recorder, signals, store, watch
 
@@ -19,28 +22,57 @@ def process_chunk(chunk_path, offset: float, chat_stamps, channel: str) -> list:
     end = offset + config.CHUNK_SECONDS
     levels = recorder.measure_levels(chunk_path)
     events = [(offset + t, w) for t, w in signals.audio_events(levels)]
+    words = []  # the transcript drives both the buzzword triggers and the speech captions
+    if config.BUZZWORDS_ENABLED:  # shortcut: transcribes every chunk on CPU, slow on long chunks; upgrade with GPU or fewer chunks
+        cfg, tiers, rules = buzz.load_rules(channel)
+        words = buzz.transcribe_words(chunk_path)
+        hits = buzz.find_hits(words, rules)
+        events += [(offset + t, w) for t, w in buzz.events(hits, buzz.rise_per_second(levels), cfg, tiers)]
+    # a window needs a sound or spoken trigger: chat alone is often spam, not a moment
+    loud = [t for t, _ in events]
     events += signals.chat_events([s for s in chat_stamps if offset <= s < end])
     clips_dir = config.DATA_DIR / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
+    windows = signals.candidates(events, config.PRE_ROLL_SECONDS, config.POST_ROLL_SECONDS, limit=len(events))
+    windows = [c for c in windows if c["score"] >= config.MIN_CLIP_SCORE
+               and any(c["start"] <= t <= c["end"] for t in loud)]
     made = []
-    for c in signals.candidates(events, config.PRE_ROLL_SECONDS, config.POST_ROLL_SECONDS,
-                                config.MAX_CLIPS_PER_CHUNK):
+    for c in windows[:config.MAX_CLIPS_PER_CHUNK]:
         start = max(0.0, c["start"] - offset)
         stop = min(float(config.CHUNK_SECONDS), c["end"] - offset)
-        if stop - start < 5:
+        if stop - start < config.MIN_CLIP_SECONDS:  # pad forward so every clip is 40-60 s
+            stop = min(float(config.CHUNK_SECONDS), start + config.MIN_CLIP_SECONDS)
+        if stop - start < config.MIN_CLIP_SECONDS:
             continue
         name = f"{channel}_{uuid.uuid4().hex[:10]}.mp4"
-        cutter.cut_clip(chunk_path, start, stop, clips_dir / name)
+        subs = None
+        if words:
+            subs = clips_dir / f"{name}.srt"
+            if not captions.write_srt(words, start, stop, subs):
+                subs = None
+        try:
+            cutter.cut_clip(chunk_path, start, stop, clips_dir / name, subs=subs)
+        finally:
+            if subs:
+                subs.unlink(missing_ok=True)
         made.append(store.add_clip(channel, c["start"], c["end"], c["score"], name))
     return made
 
 
 async def run_session(login: str, *, record=None, live_check=None, notifier=None,
                       chunk_dir=None, use_chat: bool = True, retry_seconds: float = 30,
-                      max_chunks: int = None) -> int:
-    """Record one live channel chunk by chunk until it goes offline. Returns chunks processed."""
+                      max_chunks: int = None, is_hot=None, poll_seconds: float = 15) -> int:
+    """Watch a live channel's chat and record chunks only while it is busy. Returns chunks recorded.
+
+    Recording starts when chat is hot (``signals.is_hot``) and carries on chunk by chunk
+    while it stays hot. Quiet chat costs one chat connection and a live check per poll.
+    shortcut: the moments before the first hot minute are never recorded, so the first
+    pre-roll is lost; upgrade by recording always and deleting quiet chunks.
+    """
     record = record or (lambda url, out: recorder.record_chunk(url, out))
-    chunk_dir = Path(chunk_dir or config.DATA_DIR / "recordings" / login)
+    is_hot = is_hot or (lambda stamps, now: signals.is_hot(stamps, now, min_msgs=config.HOT_CHAT_MESSAGES))
+    # one folder per session, so a restarted watcher never overwrites an earlier recording
+    chunk_dir = Path(chunk_dir or config.DATA_DIR / "recordings" / f"{login}_{int(time.time())}")
     chunk_dir.mkdir(parents=True, exist_ok=True)
     counter = chat_mod.ChatCounter(login)
     chat_task = counter.start() if use_chat else None
@@ -48,11 +80,22 @@ async def run_session(login: str, *, record=None, live_check=None, notifier=None
     index = 0
     try:
         while max_chunks is None or index < max_chunks:
+            if not is_hot(counter.stamps, time.monotonic() - counter.t0):
+                await asyncio.sleep(poll_seconds)
+                if live_check and not await live_check(login):
+                    break
+                continue
             out = chunk_dir / f"{index:04d}.ts"
             ok = await asyncio.to_thread(record, url, out)
             if ok:
-                clips = await asyncio.to_thread(process_chunk, out, index * config.CHUNK_SECONDS,
-                                                list(counter.stamps), login)
+                try:
+                    clips = await asyncio.to_thread(process_chunk, out, index * config.CHUNK_SECONDS,
+                                                    list(counter.stamps), login)
+                except Exception as e:  # keep the session alive; the chunk stays on disk to re-run
+                    print(f"process_chunk failed for {out}: {e}", file=sys.stderr)
+                    clips = []
+                else:
+                    out.unlink(missing_ok=True)  # clips are cut; the chunk itself is no longer needed
                 if notifier:
                     for clip in clips:
                         await notifier(f"Clip ready for review from {login}: {clip['file']} (score {clip['score']})")
