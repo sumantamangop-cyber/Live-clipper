@@ -35,7 +35,9 @@ review GUI (serve): Approve ─► Upload-Post ─► published | failed (kept, 
 ## Design choices
 
 - **Local review by default.** The GUI and API bind to `127.0.0.1`. Approving publishes,
-  so the API has no auth and must not be exposed without adding it.
+  so anyone who can reach the server can publish. `serve --lan` binds to `0.0.0.0` and
+  refuses to start unless `LIVE_CLIPPER_TOKEN` is set. With a token set, every request
+  needs it: `?key=<token>` once, then an HttpOnly cookie. A wrong or missing token gets 403.
 - **Chat is counted, never stored.** The IRC reader keeps the time of each message only.
 - **Discord only gets to be a notifier.** `notify.valid_webhook` accepts https URLs on
   Discord hosts and nothing else, so a bad config cannot send messages elsewhere.
@@ -82,6 +84,7 @@ Discord and Upload-Post calls. Those need the credentials below.
 | `DISCORD_WEBHOOK_URL` | live and clip-ready notices (optional) |
 | `UPLOAD_POST_API_KEY`, `UPLOAD_POST_PROFILE` | approve and publish |
 | `STREAMLINK_BIN`, `FFMPEG_BIN` | only if not on PATH |
+| `LIVE_CLIPPER_TOKEN` | Required by `serve --lan`; gates every request when set |
 | `LIVE_CLIPPER_DIR` | where recordings, clips and the queue go (default `live_clipper_data/`, git-ignored) |
 
 ```bash
