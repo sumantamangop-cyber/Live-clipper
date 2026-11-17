@@ -26,10 +26,11 @@ BUZZWORDS_ENABLED = os.environ.get("BUZZWORDS_ENABLED", "1") == "1"  # 0 skips t
 
 CHUNK_SECONDS = 600          # recording is cut into 10-minute files
 HOT_CHAT_MESSAGES = int(os.environ.get("HOT_CHAT_MESSAGES", "30"))  # chat messages per minute that start a recording
-PRE_ROLL_SECONDS = 40        # the build-up before a spike (the video says 35-45 s)
-POST_ROLL_SECONDS = 15       # the reaction after it
+PRE_ROLL_SECONDS = 20        # the build-up before a spike
+POST_ROLL_SECONDS = 10       # the reaction after it
 POLL_SECONDS = 120           # how often live status is checked
 MAX_CLIPS_PER_CHUNK = 3
 MAX_RECORDINGS = int(os.environ.get("LIVE_CLIPPER_MAX_RECORDINGS", "4"))  # streams recorded at the same time
-MIN_CLIP_SECONDS = 40        # clips run 40-60 s: shorter windows are padded forward to this
+MIN_CLIP_SECONDS = 25        # clips aim for 25-50 s: shorter windows are padded forward to this
+MAX_CLIP_SECONDS = 60        # hard cap: a busy stretch can run to a minute, never longer
 MIN_CLIP_SCORE = float(os.environ.get("MIN_CLIP_SCORE", "25"))  # below this a window is dead air, not queued

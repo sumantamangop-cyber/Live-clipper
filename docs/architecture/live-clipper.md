@@ -12,7 +12,7 @@ each one lives here:
 | 2 | Start recording as soon as a streamer goes live | `pipeline.tick` starts `run_session` | Built |
 | 3 | Record with Streamlink in 10-minute chunks | `recorder.record_command`, `config.CHUNK_SECONDS` | Built |
 | 4 | Sentiment: laughter, chat activity, emoji spikes | `signals.audio_events` (loudness above the clip's median), `signals.chat_events` (chat per 10 s bucket above a relative and an absolute floor) | Built. No emoji or laughter model: loudness and chat rate stand in for them |
-| 5 | Clip 35-45 s before the spike to catch the build-up | `config.PRE_ROLL_SECONDS = 40`, `POST_ROLL_SECONDS = 15` | Built |
+| 5 | Clip 20 s before the spike to catch the build-up, 10 s after; clips 25-50 s, 60 s hard cap | `config.PRE_ROLL_SECONDS = 20`, `POST_ROLL_SECONDS = 10`, `MIN_CLIP_SECONDS = 25`, `MAX_CLIP_SECONDS = 60` | Built |
 | 6 | Push the clip to Discord, watch it, approve | `notify.py` (Discord webhook: live and clip-ready messages), `static/index.html` (review GUI) | Built. Approval is in the GUI, not a Discord button (a webhook cannot take button clicks) |
 | 7 | On approve, post to every social account | `publish.py` through Upload-Post, the service the main app already uses | Built. Upload-Post stands in for Post for Me |
 | 8 | Run it across as many accounts as you like | One `UPLOAD_POST_PROFILE` per process | Single account only. Multi-account is a follow-up |

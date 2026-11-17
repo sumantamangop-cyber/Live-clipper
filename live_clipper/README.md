@@ -1,7 +1,7 @@
 # Live clipper
 
 Watches Twitch channels you choose. When a stream gets busy, it records the
-stream, finds the funny or exciting moments, cuts them into vertical 40-60 second
+stream, finds the funny or exciting moments, cuts them into vertical 25-50 second
 clips, and puts them in a review page. You approve the ones you like and they get
 posted. Nothing is posted without your approval.
 
@@ -20,8 +20,8 @@ It runs on your own computer as a separate program from the main OpenShorts app.
    - a burst of chat,
    - a buzzword said out loud, such as "clip that" or "no way", but only when the
      audio also gets louder right then. The word list is `tripwire/buzzwords.yml`.
-5. **Cut clips.** Each moment becomes a 40-60 second clip that starts a few seconds
-   before the spike. The clip keeps the whole picture (the video sits on a blurred
+5. **Cut clips.** Each moment becomes a 25-50 second clip (never over a minute) that starts
+   a few seconds before the spike. The clip keeps the whole picture (the video sits on a blurred
    copy of itself, so the streamer's face isn't cropped out). Speech is burned in as
    captions.
 6. **Review.** The clips appear in a page on your computer. Each has Approve,

@@ -21,27 +21,36 @@ def process_chunk(chunk_path, offset: float, chat_stamps, channel: str) -> list:
     """
     end = offset + config.CHUNK_SECONDS
     levels = recorder.measure_levels(chunk_path)
-    events = [(offset + t, w) for t, w in signals.audio_events(levels)]
+    tagged = [(offset + t, w, "loud") for t, w in signals.audio_events(levels)]  # (time, weight, source)
     words = []  # the transcript drives both the buzzword triggers and the speech captions
     if config.BUZZWORDS_ENABLED:  # shortcut: transcribes every chunk on CPU, slow on long chunks; upgrade with GPU or fewer chunks
         cfg, tiers, rules = buzz.load_rules(channel)
         words = buzz.transcribe_words(chunk_path)
         hits = buzz.find_hits(words, rules)
-        events += [(offset + t, w) for t, w in buzz.events(hits, buzz.rise_per_second(levels), cfg, tiers)]
+        tagged += [(offset + t, w, "buzzword") for t, w in buzz.events(hits, buzz.rise_per_second(levels), cfg, tiers)]
     # a window needs a sound or spoken trigger: chat alone is often spam, not a moment
-    loud = [t for t, _ in events]
-    events += signals.chat_events([s for s in chat_stamps if offset <= s < end])
+    loud = [t for t, _, _ in tagged]
+    tagged += [(s, w, "chat") for s, w in signals.chat_events([s for s in chat_stamps if offset <= s < end])]
+    events = [(t, w) for t, w, _ in tagged]
     clips_dir = config.DATA_DIR / "clips"
     clips_dir.mkdir(parents=True, exist_ok=True)
-    windows = signals.candidates(events, config.PRE_ROLL_SECONDS, config.POST_ROLL_SECONDS, limit=len(events))
-    # log why each window was kept or dropped, so a quiet result can be explained
+    windows = signals.candidates(events, config.PRE_ROLL_SECONDS, config.POST_ROLL_SECONDS,
+                                 limit=len(events), max_len=config.MAX_CLIP_SECONDS)
+    # log why each window was kept or dropped, and which triggers made up its score
     print(f"{channel} chunk at {offset:.0f}s: {len(loud)} sound/speech triggers, "
           f"{len(events) - len(loud)} chat triggers, {len(windows)} windows", file=sys.stderr)
     for c in windows:
         is_loud = any(c["start"] <= t <= c["end"] for t in loud)
         why = ("kept" if is_loud and c["score"] >= config.MIN_CLIP_SCORE
                else "score below MIN_CLIP_SCORE" if c["score"] < config.MIN_CLIP_SCORE else "no sound/speech trigger")
-        print(f"  window {c['start']:.0f}-{c['end']:.0f}s score {c['score']:.1f}: {why}", file=sys.stderr)
+        parts = {}
+        for t, w, src in tagged:
+            if c["start"] <= t <= c["end"]:
+                n, total = parts.get(src, (0, 0.0))
+                parts[src] = (n + 1, total + w)
+        made_of = ", ".join(f"{n} {src} (+{total:.1f})" for src, (n, total) in parts.items()) or "nothing"
+        print(f"  window {c['start']:.0f}-{c['end']:.0f}s score {c['score']:.1f}: {why}; from {made_of}",
+              file=sys.stderr)
     windows = [c for c in windows if c["score"] >= config.MIN_CLIP_SCORE
                and any(c["start"] <= t <= c["end"] for t in loud)]
     made = []
