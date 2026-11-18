@@ -49,16 +49,17 @@ def is_hot(stamps, now: float, window: float = 60.0, min_msgs: int = 30) -> bool
 def candidates(events, pre: float = 40.0, post: float = 15.0, limit: int = 3, max_len: float = 60.0) -> list:
     """Merge overlapping windows around events; the heaviest ``limit`` windows win.
 
-    A merged window is capped at ``max_len`` seconds so a busy stretch cannot become one long clip.
+    A merged window never runs longer than ``max_len`` seconds: a busy stretch splits into
+    several windows instead, so each event's weight counts only in the window that holds it.
     """
     windows = sorted((max(0.0, t - pre), t + post, w) for t, w in events)
     merged = []
     for start, end, weight in windows:
-        if merged and start <= merged[-1][1]:
+        if merged and start <= merged[-1][1] and end - merged[-1][0] <= max_len:
             s, e, w = merged[-1]
             merged[-1] = (s, max(e, end), w + weight)
         else:
             merged.append((start, end, weight))
     merged.sort(key=lambda x: -x[2])
-    return [{"start": round(s, 2), "end": round(min(e, s + max_len), 2), "score": round(w, 2)}
+    return [{"start": round(s, 2), "end": round(e, 2), "score": round(w, 2)}
             for s, e, w in merged[:limit]]

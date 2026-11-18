@@ -85,8 +85,9 @@ def test_chat_events_needs_absolute_and_relative_busy():
 def test_candidates_merge_overlaps_and_rank_by_weight():
     events = [(100.0, 1.0), (110.0, 1.0), (500.0, 0.5)]
     windows = signals.candidates(events, pre=40, post=15, limit=3)
-    assert windows[0] == {"start": 60.0, "end": 120.0, "score": 2.0}  # 100 and 110 merged, capped at 60 s
-    assert windows[1] == {"start": 460.0, "end": 515.0, "score": 0.5}
+    # 100 and 110 would span 65 s, past the 60 s cap, so they stay separate windows
+    assert sorted(w["score"] for w in windows) == [0.5, 1.0, 1.0]
+    assert {"start": 460.0, "end": 515.0, "score": 0.5} in windows
 
 
 def test_is_hot_counts_only_the_last_window():
@@ -114,10 +115,12 @@ async def test_quiet_chat_records_nothing_and_stops_when_offline(tmp_path):
     assert processed == 0 and calls["record"] == 0
 
 
-def test_candidates_cap_a_busy_stretch_at_max_len():
+def test_candidates_split_a_busy_stretch_so_scores_match_the_window():
     events = [(100.0, 1.0), (130.0, 1.0), (160.0, 1.0), (190.0, 1.0)]  # one long run of spikes
-    (window,) = signals.candidates(events, pre=40, post=15, limit=3, max_len=60)
-    assert window["end"] - window["start"] == 60.0
+    windows = signals.candidates(events, pre=40, post=15, limit=10, max_len=60)
+    assert all(w["end"] - w["start"] <= 60.0 for w in windows)
+    # every event lands in exactly one window, so the scores add back up to the total
+    assert round(sum(w["score"] for w in windows), 2) == 4.0
 
 
 def test_candidates_never_start_before_zero_and_respect_limit():
