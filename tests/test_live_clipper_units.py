@@ -122,8 +122,10 @@ async def test_recording_goes_on_while_a_chunk_is_being_cut(tmp_path, monkeypatc
     second = threading.Event()  # set when the second chunk starts recording
     seen = {"records": 0, "waited": []}
 
-    def fake_process(path, offset, stamps, channel):  # stands in for the slow transcribe-and-cut
+    def fake_process(path, offset, stamps, channel, notes=None):  # stands in for the slow transcribe-and-cut
         seen["waited"].append(second.wait(timeout=5))
+        if notes is not None:
+            notes.append("test: nothing to cut")
         return []
 
     def record(url, out):
@@ -467,3 +469,12 @@ def test_buzz_tier_three_needs_a_bigger_rise(tmp_path):
     cfg, tiers, _ = buzz.load_rules("nobody", path=p)
     rise = buzz.rise_per_second([(s, -40.0 if s != 30 else -32.0) for s in range(80)])  # +8 dB
     assert buzz.events([{"phrase": "rizz", "tier": 3, "t": 30.0}], rise, cfg, tiers) == []
+
+
+def test_stale_pending_picks_only_clips_waiting_too_long():
+    from datetime import datetime, timezone
+    from live_clipper import pipeline
+    now = datetime(2026, 11, 18, 2, 0, tzinfo=timezone.utc).timestamp()
+    old = {"id": "a", "created_at": "2026-11-18T01:20:00+00:00"}   # 40 min ago
+    new = {"id": "b", "created_at": "2026-11-18T01:50:00+00:00"}   # 10 min ago
+    assert [c["id"] for c in pipeline.stale_pending([old, new], now, 30 * 60)] == ["a"]

@@ -27,6 +27,7 @@ HOT_CHAT_MESSAGES = int(os.environ.get("HOT_CHAT_MESSAGES", "30"))  # chat messa
 PRE_ROLL_SECONDS = 20        # the build-up before a spike
 POST_ROLL_SECONDS = 10       # the reaction after it
 POLL_SECONDS = 120           # how often live status is checked
+REVIEW_REMINDER_MINUTES = int(os.environ.get("LIVE_CLIPPER_REVIEW_REMINDER_MINUTES", "30"))  # a clip waiting this long gets a Discord reminder
 MAX_CLIPS_PER_CHUNK = 3
 MAX_RECORDINGS = int(os.environ.get("LIVE_CLIPPER_MAX_RECORDINGS", "4"))  # streams recorded at the same time
 MIN_CLIP_SECONDS = 25        # clips aim for 25-50 s: shorter windows are padded forward to this

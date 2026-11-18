@@ -56,7 +56,8 @@ folder). Never commit real keys.
 |---|---|
 | `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | Needed to detect live channels |
 | `UPLOAD_POST_API_KEY`, `UPLOAD_POST_PROFILE` | Needed to post approved clips automatically |
-| `DISCORD_WEBHOOK_URL` | Optional: sends a note when a clip is ready |
+| `DISCORD_WEBHOOK_URL` | Optional: sends a note when a clip is ready, and a reminder when one has waited for review too long |
+| `LIVE_CLIPPER_REVIEW_REMINDER_MINUTES` | Optional: minutes a clip may wait for review before the reminder (default 30) |
 | `LIVE_CLIPPER_TOKEN` | Password for the review page. Required to view it from other devices |
 | `HOT_CHAT_MESSAGES` | Chat messages per minute that start recording (default 30) |
 | `BUZZWORDS_ENABLED` | Set to `0` to skip speech detection (faster, no captions) |

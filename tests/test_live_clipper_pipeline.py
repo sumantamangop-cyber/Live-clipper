@@ -45,8 +45,10 @@ def data_dir(tmp_path, monkeypatch):
 
 def test_windows_below_the_minimum_score_are_not_queued(chunk, data_dir, monkeypatch):
     monkeypatch.setattr(config, "MIN_CLIP_SCORE", 1e9)
-    assert pipeline.process_chunk(chunk, 0.0, [], "alpha") == []
+    notes = []
+    assert pipeline.process_chunk(chunk, 0.0, [], "alpha", notes) == []
     assert store.list_clips() == []
+    assert notes and "below MIN_CLIP_SCORE" in notes[0]  # the no-clip notice says why
 
 
 @pytest.fixture
@@ -159,7 +161,9 @@ async def test_end_to_end_session_then_approve_publishes(chunk, data_dir, monkey
     pending = store.list_clips("pending")
     assert pending, "the synthetic beeps must produce reviewable clips"
     assert not list((tmp_path / "rec").glob("*.ts")), "processed chunks are deleted"
-    assert len(calls["notes"]) == len(pending)  # one Discord note per clip queued
+    clip_notes = [n for n in calls["notes"] if n.startswith("Clip ready")]
+    assert len(clip_notes) == len(pending)  # one Discord note per clip queued
+    assert all(n.startswith(("Clip ready", "No clip")) for n in calls["notes"])
 
     published = {}
 

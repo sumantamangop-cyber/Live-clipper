@@ -3,6 +3,7 @@ import asyncio
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import httpx
@@ -12,10 +13,11 @@ from . import chat as chat_mod
 from . import config, cutter, notify, recorder, signals, store, watch
 
 
-def process_chunk(chunk_path, offset: float, chat_stamps, channel: str) -> list:
+def process_chunk(chunk_path, offset: float, chat_stamps, channel: str, notes: list = None) -> list:
     """Blocking. Find the moments in one recorded chunk and cut each into a clip for review.
 
     ``offset`` is the chunk's start in stream seconds; chat stamps are stream seconds too.
+    ``notes`` (optional) gets one line saying why the chunk made no clip, for a Discord notice.
     shortcut: a window that starts before its chunk is cut from the chunk start, so its
     pre-roll is shorter; upgrade by cutting from the joined recording.
     """
@@ -39,10 +41,13 @@ def process_chunk(chunk_path, offset: float, chat_stamps, channel: str) -> list:
     # log why each window was kept or dropped, and which triggers made up its score
     print(f"{channel} chunk at {offset:.0f}s: {len(loud)} sound/speech triggers, "
           f"{len(events) - len(loud)} chat triggers, {len(windows)} windows", file=sys.stderr)
+    best = None  # the highest-scoring window and why it was not enough, for the no-clip notice
     for c in windows:
         is_loud = any(c["start"] <= t <= c["end"] for t in loud)
         why = ("kept" if is_loud and c["score"] >= config.MIN_CLIP_SCORE
                else "score below MIN_CLIP_SCORE" if c["score"] < config.MIN_CLIP_SCORE else "no sound/speech trigger")
+        if best is None or c["score"] > best[0]:
+            best = (c["score"], f"best window {c['start']:.0f}-{c['end']:.0f}s scored {c['score']:.1f}: {why}")
         parts = {}
         for t, w, src in tagged:
             if c["start"] <= t <= c["end"]:
@@ -92,6 +97,8 @@ def process_chunk(chunk_path, offset: float, chat_stamps, channel: str) -> list:
                 path.unlink(missing_ok=True)
         made.append(store.add_clip(channel, c["start"], c["end"], c["score"], made_files["full"],
                                    zoom_file=made_files.get("zoom"), gaming_file=made_files.get("gaming")))
+    if notes is not None and not made:
+        notes.append(best[1] if best else "no moments found: no sound, speech or chat spike")
     return made
 
 
@@ -117,8 +124,9 @@ async def run_session(login: str, *, record=None, live_check=None, notifier=None
     processing = []  # chunks being cut in the background, so recording never waits for them
 
     async def cut_chunk(out, i, stamps):  # keep the session alive; a failed chunk stays on disk to re-run
+        notes = []
         try:
-            clips = await asyncio.to_thread(process_chunk, out, i * config.CHUNK_SECONDS, stamps, login)
+            clips = await asyncio.to_thread(process_chunk, out, i * config.CHUNK_SECONDS, stamps, login, notes)
         except Exception as e:
             print(f"process_chunk failed for {out}: {e}", file=sys.stderr)
             return
@@ -126,6 +134,8 @@ async def run_session(login: str, *, record=None, live_check=None, notifier=None
         if notifier:
             for clip in clips:
                 await notifier(f"Clip ready for review from {login}: {clip['file']} (score {clip['score']})")
+            if not clips:  # a chunk that made nothing still says why, so you know it was checked
+                await notifier(f"No clip from {login} at {i * config.CHUNK_SECONDS // 60} min: {notes[0]}")
 
     try:
         while max_chunks is None or index < max_chunks:
@@ -167,11 +177,16 @@ def tick(running: dict, live: set, start, paused=(), cap: int = config.MAX_RECOR
         running[login] = start(login)
 
 
+def stale_pending(clips, now: float, after_s: float) -> list:
+    """Pending clips made more than ``after_s`` seconds before ``now`` (a unix time)."""
+    return [c for c in clips if now - datetime.fromisoformat(c["created_at"]).timestamp() > after_s]
+
+
 async def run_watch(poll: float = config.POLL_SECONDS):
     """Poll Twitch for every channel on the watch list and record the ones that go live."""
     if not (config.TWITCH_CLIENT_ID and config.TWITCH_CLIENT_SECRET):
         raise RuntimeError("TWITCH_CLIENT_ID and TWITCH_CLIENT_SECRET must be set to watch Twitch")
-    running, before = {}, set()
+    running, before, reminded = {}, set(), set()
     async with httpx.AsyncClient(timeout=20) as client:
         token = None
 
@@ -202,4 +217,12 @@ async def run_watch(poll: float = config.POLL_SECONDS):
             tick(running, live, start, paused=set(store.paused()))
             store.write_watch_state({"live": sorted(live), "recording": sorted(running),
                                      "updated": time.time()})
+            # a clip nobody has reviewed in time gets one Discord reminder (not a crash if Discord is down)
+            for c in stale_pending(store.list_clips("pending"), time.time(), config.REVIEW_REMINDER_MINUTES * 60):
+                if c["id"] not in reminded:
+                    reminded.add(c["id"])
+                    try:
+                        await notifier(f"Clip still waiting for review: {c['channel']} (score {c['score']}). Approve or reject it.")
+                    except httpx.HTTPError as e:
+                        print(f"review reminder failed: {e!r}", file=sys.stderr)
             await asyncio.sleep(poll)
