@@ -223,13 +223,30 @@ def test_ass_groups_words_and_highlights_the_one_being_said(tmp_path):
     out = tmp_path / "c.ass"
     assert captions.write_ass(words, 10.0, 25.0, out)
     events = [line for line in out.read_text(encoding="utf-8").splitlines() if line.startswith("Dialogue:")]
-    # groups: [one two three] [four] [late]; one event per word, each running until the next word
-    assert len(events) == 5
-    assert events[0].startswith("Dialogue: 0,0:00:00.00,0:00:00.50,")  # starts at the first word, relative to t0
-    assert captions.ACTIVE + "ONE" + captions.RESET in events[0]       # the spoken word is highlighted
-    assert "TWO" in events[0] and "THREE" in events[0] and "FOUR" not in events[0]  # its group only
+    # groups: [one two three] [four] [late]; one event per group, so nothing repeats on screen
+    assert len(events) == 3
+    assert events[0].startswith("Dialogue: 0,0:00:00.00,0:00:01.40,")  # starts at the first word, relative to t0
+    assert "{\\k50}ONE {\\k50}TWO {\\k40}THREE" in events[0]           # karaoke: each word timed to the next word
+    assert "FOUR" not in events[0]  # its group only
     assert captions.ass_time(3661.5) == "1:01:01.50"
     assert captions.write_ass(words, 30.0, 40.0, tmp_path / "empty.ass") is False
+
+
+def test_ass_never_shows_two_captions_at_once(tmp_path):
+    from live_clipper import captions
+    # the transcriber's word times overlap: "gotta" ends after "play" starts
+    words = [{"w": w, "start": s, "end": e} for w, s, e in
+             [("wait", 1.0, 1.9), ("gotta", 1.8, 2.6), ("play", 2.5, 2.9), ("on", 2.8, 3.1)]]
+    out = tmp_path / "o.ass"
+    captions.write_ass(words, 0.0, 5.0, out)
+    spans = []
+    for line in out.read_text(encoding="utf-8").splitlines():
+        if line.startswith("Dialogue:"):
+            parts = line.split(",", 9)
+            spans.append((parts[1], parts[2]))
+    assert spans and all(s < e for s, e in spans)
+    for (s1, e1), (s2, _) in zip(spans, spans[1:]):
+        assert e1 <= s2  # the next caption starts only once the last one is gone
 
 
 # --- chat ------------------------------------------------------------------- #

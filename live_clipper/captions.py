@@ -14,8 +14,6 @@ OUTLINE = 5
 SHADOW = 2
 MARGIN_V = 420     # bottom captions: above the app's buttons, in the lower band of a 16:9 stream
 TOP_MARGIN_V = 840  # top captions (gaming look): just under the divider below the facecam
-ACTIVE = "{\\c&H00E5FF&}"  # the spoken word: yellow (BGR order)
-RESET = "{\\c}"            # back to the style's white
 
 
 def _header(alignment: int, margin_v: int) -> str:
@@ -27,7 +25,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{FONT},{FONT_SIZE},&H00FFFFFF,&H000000FF,&H00000000,&H66000000,0,0,0,0,100,100,0,0,1,{OUTLINE},{SHADOW},{alignment},40,40,{margin_v},1
+Style: Default,{FONT},{FONT_SIZE},&H0000E5FF,&H00FFFFFF,&H00000000,&H66000000,0,0,0,0,100,100,0,0,1,{OUTLINE},{SHADOW},{alignment},40,40,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -67,16 +65,21 @@ def write_ass(words, t0: float, t1: float, path, top: bool = False) -> bool:
 
     ``top`` puts the captions just under the facecam divider (gaming look) instead of the bottom.
     """
+    grouped = groups(words, t0, t1)
     events = []
-    for g in groups(words, t0, t1):
-        for i, cur in enumerate(g):
-            start = max(0.0, cur["start"] - t0)
-            # each word's event runs until the next word starts, so the highlight never lags
-            nxt = g[i + 1]["start"] if i + 1 < len(g) else cur["end"]
-            end = max(start + 0.2, nxt - t0)
-            text = " ".join(f"{ACTIVE}{_clean(w['w'])}{RESET}" if j == i else _clean(w["w"])
-                            for j, w in enumerate(g))
-            events.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{text}")
+    for n, g in enumerate(grouped):
+        start = max(0.0, g[0]["start"] - t0)
+        end = max(start + 0.2, g[-1]["end"] - t0)
+        if n + 1 < len(grouped):  # one caption on screen at a time: the next group takes over
+            end = min(end, grouped[n + 1][0]["start"] - t0)
+        if end - start < 0.05:
+            continue
+        # karaoke timing: one line per group, each word turns yellow as it is said
+        parts = []
+        for i, w in enumerate(g):
+            nxt = g[i + 1]["start"] if i + 1 < len(g) else w["end"]
+            parts.append(f"{{\\k{max(1, round((nxt - w['start']) * 100))}}}{_clean(w['w'])}")
+        events.append(f"Dialogue: 0,{ass_time(start)},{ass_time(end)},Default,,0,0,0,,{' '.join(parts)}")
     if not events:
         return False
     alignment, margin = (8, TOP_MARGIN_V) if top else (2, MARGIN_V)
