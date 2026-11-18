@@ -44,10 +44,11 @@ def process_chunk(chunk_path, offset: float, chat_stamps, channel: str, notes: l
     best = None  # the highest-scoring window and why it was not enough, for the no-clip notice
     for c in windows:
         is_loud = any(c["start"] <= t <= c["end"] for t in loud)
-        why = ("kept" if is_loud and c["score"] >= config.MIN_CLIP_SCORE
-               else "score below MIN_CLIP_SCORE" if c["score"] < config.MIN_CLIP_SCORE else "no sound/speech trigger")
-        if best is None or c["score"] > best[0]:
-            best = (c["score"], f"best window {c['start']:.0f}-{c['end']:.0f}s scored {c['score']:.1f}: {why}")
+        rate = clip_rate(c)
+        why = ("kept" if is_loud and rate >= config.MIN_CLIP_RATE
+               else "score below MIN_CLIP_RATE" if rate < config.MIN_CLIP_RATE else "no sound/speech trigger")
+        if best is None or rate > best[0]:
+            best = (rate, f"best window {c['start']:.0f}-{c['end']:.0f}s scored {rate:.2f} per second: {why}")
         parts = {}
         for t, w, src in tagged:
             if c["start"] <= t <= c["end"]:
@@ -56,8 +57,9 @@ def process_chunk(chunk_path, offset: float, chat_stamps, channel: str, notes: l
         made_of = ", ".join(f"{n} {src} (+{total:.1f})" for src, (n, total) in parts.items()) or "nothing"
         print(f"  window {c['start']:.0f}-{c['end']:.0f}s score {c['score']:.1f}: {why}; from {made_of}",
               file=sys.stderr)
-    windows = [c for c in windows if c["score"] >= config.MIN_CLIP_SCORE
+    windows = [c for c in windows if clip_rate(c) >= config.MIN_CLIP_RATE
                and any(c["start"] <= t <= c["end"] for t in loud)]
+    windows.sort(key=clip_rate, reverse=True)  # the most intense moments first, not the longest
     made = []
     for c in windows[:config.MAX_CLIPS_PER_CHUNK]:
         start = max(0.0, c["start"] - offset)
@@ -175,6 +177,11 @@ def tick(running: dict, live: set, start, paused=(), cap: int = config.MAX_RECOR
         if len(running) >= cap:
             break
         running[login] = start(login)
+
+
+def clip_rate(c) -> float:
+    """Score per second of a window: a short burst is judged by its intensity, not its length."""
+    return c["score"] / max(1.0, c["end"] - c["start"])
 
 
 def stale_pending(clips, now: float, after_s: float) -> list:

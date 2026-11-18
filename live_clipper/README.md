@@ -61,7 +61,7 @@ folder). Never commit real keys.
 | `LIVE_CLIPPER_TOKEN` | Password for the review page. Required to view it from other devices |
 | `HOT_CHAT_MESSAGES` | Chat messages per minute that start recording (default 30) |
 | `BUZZWORDS_ENABLED` | Set to `0` to skip speech detection (faster, no captions) |
-| `MIN_CLIP_SCORE` | How strong a moment must be to make a clip (default 25) |
+| `MIN_CLIP_RATE` | How intense a moment must be to make a clip, as score per second (default 0.3) |
 | `LIVE_CLIPPER_DIR` | Where recordings, clips and the queue are kept (default `live_clipper_data/`, not committed) |
 
 ## Viewing the review page from your phone

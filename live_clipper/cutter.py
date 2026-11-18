@@ -46,7 +46,7 @@ def cut_command(src, start: float, end: float, out, ffmpeg=None, subs=None,
     return [*(ffmpeg or [config.FFMPEG]), "-y", "-v", "error",
             "-ss", f"{start:.2f}", "-i", str(src), "-t", f"{duration:.2f}",
             "-filter_complex", _video_graph(subs, look, cam), "-map", "[v]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(out)]
 
 

@@ -21,6 +21,7 @@ tiers:
     weight: 3
     phrases: ["no way", "oh my god", "are you kidding me", "what the",
               "cooked", "we're cooked", "lock in", "locked in", "mogging", "mogged", "aura",
+              "crack", "strip club",
               # "chat" on its own is too frequent; only these phrases count
               "chat look at this", "what is chat saying"]
   3:

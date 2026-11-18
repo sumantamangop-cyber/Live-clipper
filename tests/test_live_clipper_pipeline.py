@@ -34,7 +34,7 @@ def _sync(fn):
 def no_speech_model(monkeypatch):
     """Transcription needs the Parakeet model (about 600 MB); these tests cover cutting, not speech."""
     monkeypatch.setattr(config, "BUZZWORDS_ENABLED", False)
-    monkeypatch.setattr(config, "MIN_CLIP_SCORE", 0.0)  # the score gate has its own test below
+    monkeypatch.setattr(config, "MIN_CLIP_RATE", 0.0)  # the rate gate has its own test below
 
 
 @pytest.fixture
@@ -44,11 +44,11 @@ def data_dir(tmp_path, monkeypatch):
 
 
 def test_windows_below_the_minimum_score_are_not_queued(chunk, data_dir, monkeypatch):
-    monkeypatch.setattr(config, "MIN_CLIP_SCORE", 1e9)
+    monkeypatch.setattr(config, "MIN_CLIP_RATE", 1e9)
     notes = []
     assert pipeline.process_chunk(chunk, 0.0, [], "alpha", notes) == []
     assert store.list_clips() == []
-    assert notes and "below MIN_CLIP_SCORE" in notes[0]  # the no-clip notice says why
+    assert notes and "below MIN_CLIP_RATE" in notes[0]  # the no-clip notice says why
 
 
 @pytest.fixture
