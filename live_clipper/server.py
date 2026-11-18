@@ -128,15 +128,23 @@ async def _publish(clip_id: str, file: str, title: str):
         store.set_status(clip_id, "failed", error=str(e)[:300])
 
 
+LOOK_FIELDS = {"full": "file", "zoom": "zoom_file", "gaming": "gaming_file"}  # look -> clip field
+
+
 @app.post("/api/clips/{clip_id}/approve")
-async def approve(clip_id: str, tasks: BackgroundTasks):
+async def approve(clip_id: str, tasks: BackgroundTasks, look: str = "full"):
     clip = _clip(clip_id)
     if clip["status"] != "pending":
         raise HTTPException(409, f"clip is {clip['status']}")
+    if look not in LOOK_FIELDS:
+        raise HTTPException(400, f"unknown look {look}")
+    name = clip.get(LOOK_FIELDS[look])
+    if not name:
+        raise HTTPException(400, f"this clip has no {look} version")
     if not (config.UPLOAD_POST_API_KEY and config.UPLOAD_POST_PROFILE):
-        return store.set_status(clip_id, "approved")  # manual posting: download the file and post it yourself
-    updated = store.set_status(clip_id, "publishing")
-    tasks.add_task(_publish, clip_id, clip["file"], f"{clip['channel']} highlight")
+        return store.set_status(clip_id, "approved", approved_file=name)  # manual posting: download it and post it yourself
+    updated = store.set_status(clip_id, "publishing", approved_file=name)
+    tasks.add_task(_publish, clip_id, name, f"{clip['channel']} highlight")
     return updated
 
 

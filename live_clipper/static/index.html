@@ -76,12 +76,18 @@
     ]);
     const children = [video, meta];
     // the reviewer picks the look: normal (whole frame), TikTok (centre crop), gaming (facecam on top)
-    const looks = [["Normal", c.file], ["TikTok", c.zoom_file], ["Gaming", c.gaming_file]].filter(([, f]) => f);
+    // the look on screen is the one Approve publishes and Download saves
+    const looks = [["full", "Normal", c.file], ["zoom", "TikTok", c.zoom_file], ["gaming", "Gaming", c.gaming_file]]
+      .filter(([, , f]) => f);
+    let chosen = "full";
+    let download = null;
     if (looks.length > 1) {
-      const buttons = looks.map(([label, file], i) => {
+      const buttons = looks.map(([key, label, file], i) => {
         const b = el("button", { className: i === 0 ? "primary" : "" }, [document.createTextNode(label)]);
         b.onclick = () => {
           video.src = `/clips/${encodeURIComponent(file)}`;
+          chosen = key;
+          if (download) { download.href = video.src; download.download = file; }
           buttons.forEach((x) => { x.className = ""; });
           b.className = "primary";
         };
@@ -92,8 +98,8 @@
     if (reviewable) {
       const approve = el("button", { className: "primary" }, [document.createTextNode("Approve")]);
       const reject = el("button", {}, [document.createTextNode("Reject")]);
-      const download = el("a", { href: `/clips/${encodeURIComponent(c.file)}`, download: c.file, className: "button" }, [document.createTextNode("Download")]);
-      approve.onclick = () => act(c.id, "approve", [approve, reject]);
+      download = el("a", { href: `/clips/${encodeURIComponent(c.file)}`, download: c.file, className: "button" }, [document.createTextNode("Download")]);
+      approve.onclick = () => act(c.id, "approve", [approve, reject], `look=${chosen}`);
       reject.onclick = () => act(c.id, "reject", [approve, reject]);
       children.push(el("div", { className: "actions" }, [approve, reject, download]));
     } else {
@@ -103,10 +109,10 @@
     return el("div", { className: "card" }, children);
   }
 
-  async function act(id, verb, buttons) {
+  async function act(id, verb, buttons, query = "") {
     buttons.forEach((b) => (b.disabled = true));
     try {
-      const r = await fetch(`/api/clips/${id}/${verb}`, { method: "POST" });
+      const r = await fetch(`/api/clips/${id}/${verb}${query ? "?" + query : ""}`, { method: "POST" });
       if (!r.ok) {
         const body = await r.json().catch(() => ({}));
         notice(body.detail || `Request failed (${r.status})`);

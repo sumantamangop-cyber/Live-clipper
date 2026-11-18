@@ -37,6 +37,19 @@ def test_approve_without_publishing_marks_approved_for_manual_posting(client, tm
     assert store.list_clips("pending") == []
 
 
+def test_approve_takes_the_look_on_screen(client):
+    clip = store.add_clip("alpha", 0, 30, 1.0, "a.mp4", zoom_file="a_zoom.mp4", gaming_file="a_gaming.mp4")
+    r = client.post(f"/api/clips/{clip['id']}/approve?look=zoom")
+    assert r.status_code == 200 and r.json()["approved_file"] == "a_zoom.mp4"
+
+
+def test_approve_refuses_a_look_the_clip_does_not_have(client):
+    clip = store.add_clip("alpha", 0, 30, 1.0, "a.mp4")  # no zoom or gaming version
+    assert client.post(f"/api/clips/{clip['id']}/approve?look=gaming").status_code == 400
+    assert client.post(f"/api/clips/{clip['id']}/approve?look=nonsense").status_code == 400
+    assert len(store.list_clips("pending")) == 1  # a refused approve leaves the clip in review
+
+
 def test_reject_moves_clip_out_of_review_and_cannot_be_approved(client, tmp_path, monkeypatch):
     monkeypatch.setattr(config, "UPLOAD_POST_API_KEY", "KEY")
     monkeypatch.setattr(config, "UPLOAD_POST_PROFILE", "creator")
