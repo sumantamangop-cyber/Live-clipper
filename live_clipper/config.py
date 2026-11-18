@@ -17,8 +17,6 @@ UPLOAD_POST_PROFILE = os.environ.get("UPLOAD_POST_PROFILE", "")
 
 STREAMLINK = os.environ.get("STREAMLINK_BIN", "streamlink")
 FFMPEG = os.environ.get("FFMPEG_BIN", "ffmpeg")
-CAPTION_STYLE = os.environ.get(  # libass style for the burned-in speech captions
-    "CLIP_CAPTION_STYLE", "FontName=Impact,Bold=1,FontSize=13,Outline=3,Shadow=0,Alignment=2,MarginV=60")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BUZZWORDS_FILE = Path(os.environ.get("BUZZWORDS_FILE", REPO_ROOT / "tripwire" / "buzzwords.yml"))

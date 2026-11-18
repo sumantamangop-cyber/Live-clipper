@@ -61,18 +61,37 @@ def process_chunk(chunk_path, offset: float, chat_stamps, channel: str) -> list:
             stop = min(float(config.CHUNK_SECONDS), start + config.MIN_CLIP_SECONDS)
         if stop - start < config.MIN_CLIP_SECONDS:
             continue
-        name = f"{channel}_{uuid.uuid4().hex[:10]}.mp4"
-        subs = None
+        stem = f"{channel}_{uuid.uuid4().hex[:10]}"
+        cam = store.facecam(channel)  # the gaming look exists only where the facecam box is known
+        looks = ["full", "zoom"] + (["gaming"] if cam else [])
+        files = {look: f"{stem}_{look}.mp4" for look in looks}
+        files["full"] = f"{stem}.mp4"  # the approved file keeps the plain name
+        subs = {}  # look -> ASS file: captions sit at the bottom, or under the divider for gaming
         if words:
-            subs = clips_dir / f"{name}.srt"
-            if not captions.write_srt(words, start, stop, subs):
-                subs = None
+            for look in ("bottom", "top"):
+                path = clips_dir / f"{stem}_{look}.ass"
+                if captions.write_ass(words, start, stop, path, top=look == "top"):
+                    subs[look] = path
+        made_files = {}
         try:
-            cutter.cut_clip(chunk_path, start, stop, clips_dir / name, subs=subs)
+            for look in looks:
+                ass = subs.get("top" if look == "gaming" else "bottom")
+                try:
+                    cutter.cut_clip(chunk_path, start, stop, clips_dir / files[look], subs=ass,
+                                    look=look, cam=cam)
+                except Exception as e:
+                    if look == "full":
+                        raise
+                    # an extra look is optional: a failed one is dropped, the full frame is kept
+                    print(f"{look} cut failed for {files[look]}: {e!r}", file=sys.stderr)
+                    (clips_dir / files[look]).unlink(missing_ok=True)  # never leave a half-written file
+                    continue
+                made_files[look] = files[look]
         finally:
-            if subs:
-                subs.unlink(missing_ok=True)
-        made.append(store.add_clip(channel, c["start"], c["end"], c["score"], name))
+            for path in subs.values():
+                path.unlink(missing_ok=True)
+        made.append(store.add_clip(channel, c["start"], c["end"], c["score"], made_files["full"],
+                                   zoom_file=made_files.get("zoom"), gaming_file=made_files.get("gaming")))
     return made
 
 
@@ -95,6 +114,19 @@ async def run_session(login: str, *, record=None, live_check=None, notifier=None
     chat_task = counter.start() if use_chat else None
     url = watch.stream_url(login)
     index = 0
+    processing = []  # chunks being cut in the background, so recording never waits for them
+
+    async def cut_chunk(out, i, stamps):  # keep the session alive; a failed chunk stays on disk to re-run
+        try:
+            clips = await asyncio.to_thread(process_chunk, out, i * config.CHUNK_SECONDS, stamps, login)
+        except Exception as e:
+            print(f"process_chunk failed for {out}: {e}", file=sys.stderr)
+            return
+        out.unlink(missing_ok=True)  # clips are cut; the chunk itself is no longer needed
+        if notifier:
+            for clip in clips:
+                await notifier(f"Clip ready for review from {login}: {clip['file']} (score {clip['score']})")
+
     try:
         while max_chunks is None or index < max_chunks:
             if not is_hot(counter.stamps, time.monotonic() - counter.t0):
@@ -105,22 +137,13 @@ async def run_session(login: str, *, record=None, live_check=None, notifier=None
             out = chunk_dir / f"{index:04d}.ts"
             ok = await asyncio.to_thread(record, url, out)
             if ok:
-                try:
-                    clips = await asyncio.to_thread(process_chunk, out, index * config.CHUNK_SECONDS,
-                                                    list(counter.stamps), login)
-                except Exception as e:  # keep the session alive; the chunk stays on disk to re-run
-                    print(f"process_chunk failed for {out}: {e}", file=sys.stderr)
-                    clips = []
-                else:
-                    out.unlink(missing_ok=True)  # clips are cut; the chunk itself is no longer needed
-                if notifier:
-                    for clip in clips:
-                        await notifier(f"Clip ready for review from {login}: {clip['file']} (score {clip['score']})")
+                processing.append(asyncio.create_task(cut_chunk(out, index, list(counter.stamps))))
             index += 1
             if live_check and not await live_check(login):
                 break
             if not ok:
                 await asyncio.sleep(retry_seconds)
+        await asyncio.gather(*processing)  # a normal end waits for the last clips to be queued
     finally:
         if chat_task:
             counter.stop()

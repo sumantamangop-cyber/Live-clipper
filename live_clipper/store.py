@@ -31,10 +31,17 @@ def _write(name: str, value):
     os.replace(tmp, _path(name))
 
 
-def add_clip(channel: str, start: float, end: float, score: float, file: str) -> dict:
+def facecam(channel: str):
+    """The facecam box (x, y, w, h) in source pixels for a channel, from facecams.json; None if unset."""
+    box = _read("facecams.json", {}).get(channel)
+    return (box["x"], box["y"], box["w"], box["h"]) if box else None
+
+
+def add_clip(channel: str, start: float, end: float, score: float, file: str,
+             zoom_file: str = None, gaming_file: str = None) -> dict:
     clip = {
         "id": uuid.uuid4().hex, "channel": channel, "start": start, "end": end,
-        "score": score, "file": file, "status": "pending",
+        "score": score, "file": file, "zoom_file": zoom_file, "gaming_file": gaming_file, "status": "pending",
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     with _lock:

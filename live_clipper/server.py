@@ -145,6 +145,8 @@ def reject(clip_id: str):
     clip = _clip(clip_id)
     if clip["status"] != "pending":
         raise HTTPException(409, f"clip is {clip['status']}")
-    (config.DATA_DIR / "clips" / clip["file"]).unlink(missing_ok=True)  # a rejected clip is deleted from disk
+    for name in (clip["file"], clip.get("zoom_file"), clip.get("gaming_file")):  # rejected: every look is deleted
+        if name:
+            (config.DATA_DIR / "clips" / name).unlink(missing_ok=True)
     store.remove_clip(clip_id)
     return {"removed": clip_id}

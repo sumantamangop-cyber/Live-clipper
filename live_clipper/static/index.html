@@ -75,6 +75,20 @@
       el("span", {}, [document.createTextNode(`score ${c.score}`)]),
     ]);
     const children = [video, meta];
+    // the reviewer picks the look: normal (whole frame), TikTok (centre crop), gaming (facecam on top)
+    const looks = [["Normal", c.file], ["TikTok", c.zoom_file], ["Gaming", c.gaming_file]].filter(([, f]) => f);
+    if (looks.length > 1) {
+      const buttons = looks.map(([label, file], i) => {
+        const b = el("button", { className: i === 0 ? "primary" : "" }, [document.createTextNode(label)]);
+        b.onclick = () => {
+          video.src = `/clips/${encodeURIComponent(file)}`;
+          buttons.forEach((x) => { x.className = ""; });
+          b.className = "primary";
+        };
+        return b;
+      });
+      children.unshift(el("div", { className: "actions" }, buttons));
+    }
     if (reviewable) {
       const approve = el("button", { className: "primary" }, [document.createTextNode("Approve")]);
       const reject = el("button", {}, [document.createTextNode("Reject")]);

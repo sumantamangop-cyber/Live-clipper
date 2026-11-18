@@ -1,5 +1,6 @@
 """Unit tests for the live clipper: pure logic and mocked HTTP. No ffmpeg, no network."""
 import asyncio
+import contextlib
 import functools
 import json
 
@@ -115,6 +116,30 @@ async def test_quiet_chat_records_nothing_and_stops_when_offline(tmp_path):
     assert processed == 0 and calls["record"] == 0
 
 
+@_sync
+async def test_recording_goes_on_while_a_chunk_is_being_cut(tmp_path, monkeypatch):
+    import threading
+    second = threading.Event()  # set when the second chunk starts recording
+    seen = {"records": 0, "waited": []}
+
+    def fake_process(path, offset, stamps, channel):  # stands in for the slow transcribe-and-cut
+        seen["waited"].append(second.wait(timeout=5))
+        return []
+
+    def record(url, out):
+        seen["records"] += 1
+        if seen["records"] == 2:
+            second.set()
+        return True
+
+    monkeypatch.setattr(pipeline, "process_chunk", fake_process)
+    processed = await pipeline.run_session(
+        "alpha", record=record, chunk_dir=tmp_path / "rec", use_chat=False,
+        is_hot=lambda s, n: True, poll_seconds=0, max_chunks=2)
+    assert processed == 2
+    assert seen["waited"][0] is True  # the second chunk recorded before the first was cut
+
+
 def test_candidates_split_a_busy_stretch_so_scores_match_the_window():
     events = [(100.0, 1.0), (130.0, 1.0), (160.0, 1.0), (190.0, 1.0)]  # one long run of spikes
     windows = signals.candidates(events, pre=40, post=15, limit=10, max_len=60)
@@ -155,20 +180,56 @@ def test_cut_command_keeps_the_whole_frame_over_a_blurred_background():
 
 
 def test_cut_command_burns_in_subtitles_from_a_bare_file_name():
-    cmd = cutter.cut_command("src.ts", 0, 30, "clip.mp4", ffmpeg=["ff"], subs="/tmp/x/clip.srt")
+    cmd = cutter.cut_command("src.ts", 0, 30, "clip.mp4", ffmpeg=["ff"], subs="/tmp/x/clip.ass")
     graph = cmd[cmd.index("-filter_complex") + 1]
-    assert "subtitles=filename=clip.srt:force_style='" in graph
-    assert "[v]" in graph
+    assert "subtitles=filename=clip.ass[v]" in graph  # styling lives in the ASS file itself
+    assert "force_style" not in graph
 
 
-def test_srt_groups_words_into_short_lines_with_relative_times():
+def test_zoom_look_crops_the_centre_of_a_16_9_frame_to_fill_the_screen():
+    cmd = cutter.cut_command("src.ts", 0, 30, "clip.mp4", ffmpeg=["ff"], look="zoom")
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert graph.startswith("[0:v]crop=trunc(ih*9/32)*2:ih,scale=1080:1920") and graph.endswith("[v]")
+    assert "boxblur" not in graph
+
+
+def test_gaming_look_stacks_the_facecam_over_the_game_and_needs_the_cam_box():
+    cmd = cutter.cut_command("src.ts", 0, 30, "clip.mp4", ffmpeg=["ff"], look="gaming", cam=(0, 640, 580, 440),
+                             subs="/tmp/x/clip_top.ass")
+    graph = cmd[cmd.index("-filter_complex") + 1]
+    assert "crop=580:440:0:640" in graph                      # the facecam box, in source pixels
+    assert "vstack=inputs=2" in graph and "pad=1080:776" in graph  # 768 cam + 8 divider on top, 1144 game below
+    assert "subtitles=filename=clip_top.ass[v]" in graph
+    with pytest.raises(ValueError):
+        cutter.cut_command("src.ts", 0, 30, "clip.mp4", ffmpeg=["ff"], look="gaming")
+
+
+def test_top_captions_sit_under_the_divider_and_bottom_ones_stay_low(tmp_path):
+    from live_clipper import captions
+    words = [{"w": "hi", "start": 1.0, "end": 1.4}]
+    captions.write_ass(words, 0.0, 5.0, tmp_path / "top.ass", top=True)
+    captions.write_ass(words, 0.0, 5.0, tmp_path / "bottom.ass")
+    top = (tmp_path / "top.ass").read_text(encoding="utf-8")
+    bottom = (tmp_path / "bottom.ass").read_text(encoding="utf-8")
+    # Style fields end: Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+    assert ",5,2,8,40,40,840,1" in top   # alignment 8 = top centre, 840 px down: under the 776 px divider
+    assert ",5,2,2,40,40,420,1" in bottom
+
+
+def test_ass_groups_words_and_highlights_the_one_being_said(tmp_path):
     from live_clipper import captions
     words = [{"w": w, "start": s, "end": s + 0.4} for w, s in
-             [("one", 10.0), ("two", 10.5), ("three", 11.0), ("four", 11.5), ("five", 12.0), ("late", 20.0)]]
-    cues = captions.lines(words, 10.0, 25.0)
-    assert [t for _, _, t in cues] == ["one two three four", "five", "late"]
-    assert cues[0][0] == 0.0 and abs(cues[2][0] - 10.0) < 1e-9
-    assert captions.srt_time(3661.5) == "01:01:01,500"
+             [("one", 10.0), ("two", 10.5), ("three", 11.0), ("four", 11.5), ("late", 20.0)]]
+    out = tmp_path / "c.ass"
+    assert captions.write_ass(words, 10.0, 25.0, out)
+    events = [line for line in out.read_text(encoding="utf-8").splitlines() if line.startswith("Dialogue:")]
+    # groups: [one two three] [four] [late]; one event per word, each running until the next word
+    assert len(events) == 5
+    assert events[0].startswith("Dialogue: 0,0:00:00.00,0:00:00.50,")  # starts at the first word, relative to t0
+    assert captions.ACTIVE + "ONE" + captions.RESET in events[0]       # the spoken word is highlighted
+    assert "TWO" in events[0] and "THREE" in events[0] and "FOUR" not in events[0]  # its group only
+    assert captions.ass_time(3661.5) == "1:01:01.50"
+    assert captions.write_ass(words, 30.0, 40.0, tmp_path / "empty.ass") is False
 
 
 # --- chat ------------------------------------------------------------------- #
@@ -316,6 +377,7 @@ def test_run_watch_survives_a_network_error_and_keeps_polling(monkeypatch):
     monkeypatch.setattr(config, "TWITCH_CLIENT_SECRET", "sec")
     monkeypatch.setattr(pipeline.store, "channels", lambda: ["alpha"])
     calls = []
+    polled_again = asyncio.Event()
 
     async def app_token(*a):
         return "tok"
@@ -324,16 +386,19 @@ def test_run_watch_survives_a_network_error_and_keeps_polling(monkeypatch):
         calls.append(1)
         if len(calls) == 1:
             raise httpx.ConnectError("network down")
+        polled_again.set()
         return set()
 
     monkeypatch.setattr(watch_mod, "app_token", app_token)
     monkeypatch.setattr(watch_mod, "fetch_live", fetch_live)
 
     async def run_briefly():
-        try:
-            await asyncio.wait_for(pipeline.run_watch(poll=0.01), timeout=1.0)
-        except asyncio.TimeoutError:
-            pass  # the watch loop never returns on its own; the timeout is the normal stop
+        watcher = asyncio.create_task(pipeline.run_watch(poll=0.01))
+        # wait for the poll after the failure, not a fixed time: a busy machine can be slow to start
+        await asyncio.wait_for(polled_again.wait(), timeout=10)
+        watcher.cancel()  # the watch loop never returns on its own; cancelling is the normal stop
+        with contextlib.suppress(asyncio.CancelledError):
+            await watcher
 
     asyncio.run(run_briefly())
     assert len(calls) > 1  # polled again after the failure instead of crashing
