@@ -198,19 +198,29 @@ async def run_watch(poll: float = config.POLL_SECONDS):
         token = None
 
         async def check(login):
+            if watch.is_youtube(login):
+                return await asyncio.to_thread(watch.youtube_live, login)
             return login in await watch.fetch_live(client, [login], config.TWITCH_CLIENT_ID, token)
 
         async def notifier(text):
             await notify.send(client, config.DISCORD_WEBHOOK_URL, text)
 
         def start(login):
+            if watch.is_youtube(login):  # YouTube has no chat we can count: record while it is live
+                return asyncio.create_task(run_session(login, live_check=check, notifier=notifier,
+                                                       use_chat=False, is_hot=lambda stamps, now: True))
             return asyncio.create_task(run_session(login, live_check=check, notifier=notifier))
 
         while True:
             try:
                 if token is None:
                     token = await watch.app_token(client, config.TWITCH_CLIENT_ID, config.TWITCH_CLIENT_SECRET)
-                live = await watch.fetch_live(client, store.channels(), config.TWITCH_CLIENT_ID, token)
+                logins = store.channels()
+                twitch = [c for c in logins if not watch.is_youtube(c)]
+                youtube = [c for c in logins if watch.is_youtube(c)]
+                live = await watch.fetch_live(client, twitch, config.TWITCH_CLIENT_ID, token)
+                checks = await asyncio.gather(*(asyncio.to_thread(watch.youtube_live, c) for c in youtube))
+                live |= {c for c, on in zip(youtube, checks) if on}
                 for login in watch.newly_live(before, live):
                     if config.DISCORD_WEBHOOK_URL:
                         await notifier(f"{login} is live. Recording started.")

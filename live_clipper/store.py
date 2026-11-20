@@ -1,6 +1,7 @@
 """The review queue and the watch list: two small JSON files under DATA_DIR, written atomically."""
 import json
 import os
+import re
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -109,9 +110,13 @@ def watch_state() -> dict:
 
 
 def add_channel(login: str) -> list:
-    login = login.strip().lower()
-    if not login.replace("_", "").isalnum() or len(login) > 25:
-        raise ValueError("not a Twitch login")
+    login = login.strip().lower().removeprefix("@")
+    if "." in login:  # a YouTube @handle (watch.is_youtube); Twitch logins never contain a dot
+        valid = re.fullmatch(r"[a-z0-9._-]{2,30}", login) is not None  # YouTube resolves @dylan.page. but not @dylan.page
+    else:
+        valid = login.replace("_", "").isalnum() and len(login) <= 25
+    if not valid:
+        raise ValueError("not a Twitch login or YouTube @handle")
     with _lock:
         chans = _read("channels.json", [])
         if login not in chans:

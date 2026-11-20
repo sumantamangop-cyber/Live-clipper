@@ -32,4 +32,4 @@ MAX_CLIPS_PER_CHUNK = 3
 MAX_RECORDINGS = int(os.environ.get("LIVE_CLIPPER_MAX_RECORDINGS", "4"))  # streams recorded at the same time
 MIN_CLIP_SECONDS = 25        # clips aim for about 30 s: shorter windows are padded forward to this
 MAX_CLIP_SECONDS = 35        # hard cap: a busy stretch is split past this, so clips stay short and quick to cut
-MIN_CLIP_RATE = float(os.environ.get("MIN_CLIP_RATE", "0.3"))  # score per second a window needs to be queued (dead air falls below)
+MIN_CLIP_RATE = float(os.environ.get("MIN_CLIP_RATE", "0.1"))  # score per second a window needs to be queued (dead air falls below)
